@@ -261,7 +261,7 @@ if ($BuildInstaller) {
             'Name: "{commondesktop}\{#MyAppName}"; Filename: "{app}\launcher.vbs"; IconFilename: "{app}\AppIcon.ico"',
             '',
             '[Run]',
-            'Filename: "{app}\launcher.vbs"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent'
+            'Filename: "{app}\launcher.vbs"; Description: "Launch {#MyAppName}"; Flags: shellexec nowait postinstall skipifsilent'
         )
         $issContent = $issLines -join "`n"
         $issFile = "$DEST\Setup.iss"

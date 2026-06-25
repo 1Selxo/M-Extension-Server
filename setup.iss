@@ -65,7 +65,7 @@ Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
 
 [Run]
 Filename: "{app}\launcher.vbs"; Description: "Launch {#MyAppName} now"; \
-    Flags: nowait postinstall skipifsilent
+    Flags: shellexec nowait postinstall skipifsilent
 
 [Code]
 { Clean up temp icon conversion directory if it exists }
