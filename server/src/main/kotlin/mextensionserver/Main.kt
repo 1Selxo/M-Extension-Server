@@ -8,6 +8,7 @@ package mextensionserver
  * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
+import android.os.Looper
 import eu.kanade.tachiyomi.App
 import io.github.oshai.kotlinlogging.KotlinLogging
 import mextensionserver.controller.MExtensionServerController
@@ -57,6 +58,17 @@ fun main(args: Array<String>) {
 
 private fun initApplication(appDir: String?) {
     logger.info("Running MExtensionServer ${BuildConfig.VERSION} revision ${BuildConfig.REVISION}")
+
+    // Initialize the main Looper for the application thread.
+    // This is required for extensions that use Dispatchers.Main from coroutines,
+    // which attempts to resolve the Android main handler via Looper.getMainLooper().
+    // Without this, extensions that use `withContext(Dispatchers.Main)` will fail.
+    try {
+        Looper.prepareMainLooper()
+    } catch (e: IllegalStateException) {
+        // If main looper is already prepared, continue without error
+        logger.debug { "Main Looper already initialized: ${e.message}" }
+    }
 
     // Set custom app directory if provided
     appDir?.let { System.setProperty("ts.server.rootDir", it) }

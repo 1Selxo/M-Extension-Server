@@ -35,6 +35,7 @@ class DalvikHandler {
                         val baseUrl = source.javaClass.getMethod("getBaseUrl").invoke(source) as String
                         java.net.URI(baseUrl).host
                     } catch (e: Exception) {
+                        logger.error(e) { "Error getting domain from source" }
                         null
                     }
                 } ?: "localhost"
@@ -43,19 +44,21 @@ class DalvikHandler {
             val cookies =
                 (session.headers["cookie"] ?: session.headers["Cookie"])
                     ?.let { cookieHeader ->
-                        cookieHeader.split(";").map { cookieStr ->
-                            val trimmed = cookieStr.trim()
-                            val parts = trimmed.split("=", limit = 2)
-                            val name = parts[0].trim()
-                            val value = parts[1].trim()
-                            Cookie
-                                .Builder()
-                                .name(name)
-                                .value(value)
-                                .domain(domain.removePrefix("."))
-                                .path("/")
-                                .build()
-                        }
+                        cookieHeader
+                            .split(";")
+                            .map { cookieStr ->
+                                val trimmed = cookieStr.trim()
+                                val parts = trimmed.split("=", limit = 2)
+                                val name = parts[0].trim()
+                                val value = parts[1].trim()
+                                Cookie
+                                    .Builder()
+                                    .name(name)
+                                    .value(value)
+                                    .domain(domain.removePrefix("."))
+                                    .path("/")
+                                    .build()
+                            }.distinctBy { it.name }
                     }?.toList()
             val network =
                 loadedExtension.sources.firstOrNull()?.let { source ->
