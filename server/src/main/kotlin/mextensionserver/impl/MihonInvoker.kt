@@ -1,5 +1,6 @@
 package mextensionserver.impl
 
+import android.app.Application
 import androidx.preference.CheckBoxPreference
 import androidx.preference.EditTextPreference
 import androidx.preference.ListPreference
@@ -35,22 +36,26 @@ import mextensionserver.model.MangaData
 import mextensionserver.model.MangaResponse
 import mextensionserver.model.toJAnime
 import mextensionserver.model.toJManga
+import uy.kohesive.injekt.Injekt
+import uy.kohesive.injekt.api.get
 
 object MihonInvoker {
     private val logger = KotlinLogging.logger {}
-    private val context =
-        xyz.nulldev.androidcompat.androidimpl
-            .CustomContext()
+    private const val BRIDGE_CONTEXT_KEY = "__mangatan_bridge_context__"
+    private val context: Application
+        get() = Injekt.get()
 
     fun invokeMethod(
         loadedExtension: MExtensionServerLoader.LoadedExtension,
         data: DataBody,
     ): Any {
-        val source =
-            loadedExtension.sources.firstOrNull()
-                ?: throw IllegalArgumentException("No sources found in extension")
+        if (data.method == "sourcesManga" || data.method == "sourcesAnime") {
+            return loadedExtension.sources.map(::sourceDescriptor)
+        }
 
-        applyPreferences(data, source)
+        val source = selectSource(loadedExtension.sources, data)
+
+        preparePreferences(data, source)
 
         return when (data.method) {
             "headersManga" -> invokeHeadersManga(source as CatalogueSource)
@@ -63,6 +68,7 @@ object MihonInvoker {
             "getChapterList" -> invokeGetChapterList(source as CatalogueSource, data.mangaData)
             "getPageList" -> invokeGetPageList(source as CatalogueSource, data.chapterData)
             "preferencesManga" -> invokePreferencesManga(source as CatalogueSource)
+            "setPreferenceManga" -> invokeSetPreferenceManga(source as CatalogueSource, data)
             "headersAnime" -> invokeHeadersAnime(source as AnimeCatalogueSource)
             "filtersAnime" -> invokeFiltersAnime(source as AnimeCatalogueSource)
             "supportLatestAnime" -> invokeSupportLatestAnime(source as AnimeCatalogueSource)
@@ -73,8 +79,81 @@ object MihonInvoker {
             "getEpisodeList" -> invokeGetEpisodeList(source as AnimeCatalogueSource, data.animeData)
             "getVideoList" -> invokeGetVideoList(source as AnimeCatalogueSource, data.episodeData)
             "preferencesAnime" -> invokePreferencesAnime(source as AnimeCatalogueSource)
+            "setPreferenceAnime" -> invokeSetPreferenceAnime(source as AnimeCatalogueSource, data)
             else -> throw IllegalArgumentException("Unknown method: ${data.method}")
         }
+    }
+
+    fun selectSource(
+        loadedSources: List<Any>,
+        data: DataBody,
+    ): Any {
+        if (loadedSources.isEmpty()) {
+            throw IllegalArgumentException("No sources found in extension")
+        }
+        val requestedSourceId =
+            bridgeContext(data)["sourceId"]?.toString()
+                ?: return loadedSources.first()
+        return loadedSources.firstOrNull { sourceId(it) == requestedSourceId }
+            ?: throw IllegalArgumentException("Source $requestedSourceId was not found in extension")
+    }
+
+    private fun sourceId(source: Any): String =
+        when (source) {
+            is eu.kanade.tachiyomi.source.Source -> source.id.toString()
+            is eu.kanade.tachiyomi.animesource.AnimeSource -> source.id.toString()
+            else -> throw IllegalArgumentException("Unknown source type: ${source.javaClass}")
+        }
+
+    private fun sourceDescriptor(source: Any): Map<String, String> =
+        when (source) {
+            is eu.kanade.tachiyomi.source.Source ->
+                mapOf(
+                    "id" to source.id.toString(),
+                    "name" to source.name,
+                    "lang" to source.lang,
+                    "baseUrl" to
+                        runCatching {
+                            source.javaClass
+                                .getMethod("getBaseUrl")
+                                .invoke(source)
+                                ?.toString()
+                                .orEmpty()
+                        }.getOrDefault(""),
+                )
+            is eu.kanade.tachiyomi.animesource.AnimeSource ->
+                mapOf(
+                    "id" to source.id.toString(),
+                    "name" to source.name,
+                    "lang" to source.lang,
+                    "baseUrl" to
+                        runCatching {
+                            source.javaClass
+                                .getMethod("getBaseUrl")
+                                .invoke(source)
+                                ?.toString()
+                                .orEmpty()
+                        }.getOrDefault(""),
+                )
+            else -> throw IllegalArgumentException("Unknown source type: ${source.javaClass}")
+        }
+
+    private fun bridgeContext(data: DataBody): Map<String, Any> =
+        data.preferences
+            ?.firstOrNull { it["key"] == BRIDGE_CONTEXT_KEY }
+            .orEmpty()
+
+    fun preparePreferences(
+        data: DataBody,
+        source: Any,
+    ) {
+        val changedKey =
+            if (data.method.startsWith("setPreference")) {
+                bridgeContext(data)["changedPreferenceKey"]?.toString()
+            } else {
+                null
+            }
+        applyPreferences(data, source, skipPreferenceKey = changedKey)
     }
 
     private fun invokeHeadersManga(source: CatalogueSource): List<String> =
@@ -415,6 +494,71 @@ object MihonInvoker {
         return preferences
     }
 
+    private fun invokeSetPreferenceAnime(
+        source: AnimeCatalogueSource,
+        data: DataBody,
+    ): MutableList<Map<String, Any>> {
+        if (source !is ConfigurableAnimeSource) return mutableListOf()
+        return invokeSetPreference(source.id, data, source::setupPreferenceScreen)
+    }
+
+    private fun invokeSetPreferenceManga(
+        source: CatalogueSource,
+        data: DataBody,
+    ): MutableList<Map<String, Any>> {
+        if (source !is eu.kanade.tachiyomi.source.ConfigurableSource) return mutableListOf()
+        return invokeSetPreference(source.id, data, source::setupPreferenceScreen)
+    }
+
+    private fun invokeSetPreference(
+        sourceId: Long,
+        data: DataBody,
+        setup: (PreferenceScreen) -> Unit,
+    ): MutableList<Map<String, Any>> {
+        val screen = PreferenceScreen(context)
+        val prefs = context.getSharedPreferences("source_$sourceId", 0)
+        screen.setSharedPreferences(prefs)
+        setup(screen)
+
+        val changedKey = bridgeContext(data)["changedPreferenceKey"]?.toString()
+        val changedData = data.preferences?.firstOrNull { it["key"] == changedKey }
+        val preference =
+            changedKey?.let { key ->
+                screen.preferences.firstOrNull { it.key == key }
+            }
+        val changedValue = changedData?.let(::preferenceValue)
+        if (preference != null && changedValue != null) {
+            val oldValue = preference.currentValue
+            preference.saveNewValue(changedValue)
+            if (!preference.callChangeListener(changedValue)) {
+                preference.saveNewValue(oldValue)
+            }
+        }
+
+        val preferences = mutableListOf<Map<String, Any>>()
+        processPreferences(screen, preferences)
+        return preferences
+    }
+
+    private fun preferenceValue(data: Map<String, Any>): Any? =
+        when {
+            data.containsKey("checkBoxPreference") ->
+                (data["checkBoxPreference"] as? Map<*, *>)?.get("value")
+            data.containsKey("switchPreferenceCompat") ->
+                (data["switchPreferenceCompat"] as? Map<*, *>)?.get("value")
+            data.containsKey("editTextPreference") ->
+                (data["editTextPreference"] as? Map<*, *>)?.get("value")
+            data.containsKey("listPreference") -> {
+                val list = data["listPreference"] as? Map<*, *>
+                val index = list?.get("valueIndex") as? Int
+                val values = list?.get("entryValues") as? List<*>
+                if (index != null && values != null && index in values.indices) values[index] else null
+            }
+            data.containsKey("multiSelectListPreference") ->
+                ((data["multiSelectListPreference"] as? Map<*, *>)?.get("values") as? List<*>)?.toSet()
+            else -> null
+        }
+
     private fun processPreferences(
         screen: PreferenceScreen,
         preferences: MutableList<Map<String, Any>>,
@@ -430,7 +574,7 @@ object MihonInvoker {
                                 mapOf(
                                     "title" to preference.title,
                                     "summary" to (preference.summary ?: ""),
-                                    "value" to preference.isChecked,
+                                    "value" to preference.currentValue,
                                 ),
                         ),
                     )
@@ -443,7 +587,7 @@ object MihonInvoker {
                                 mapOf(
                                     "title" to preference.title,
                                     "summary" to (preference.summary ?: ""),
-                                    "value" to preference.isChecked,
+                                    "value" to preference.currentValue,
                                 ),
                         ),
                     )
@@ -456,8 +600,8 @@ object MihonInvoker {
                                 mapOf(
                                     "title" to preference.title,
                                     "summary" to (preference.summary ?: ""),
-                                    "value" to preference.text,
-                                    "text" to preference.text,
+                                    "value" to preference.currentValue,
+                                    "text" to preference.currentValue,
                                     "dialogMessage" to preference.getDialogMessage(),
                                     "dialogTitle" to preference.getDialogTitle(),
                                 ),
@@ -472,7 +616,7 @@ object MihonInvoker {
                                 mapOf(
                                     "title" to preference.title,
                                     "summary" to (preference.summary ?: ""),
-                                    "valueIndex" to preference.findIndexOfValue(preference.value),
+                                    "valueIndex" to preference.findIndexOfValue(preference.currentValue.toString()),
                                     "entries" to preference.entries,
                                     "entryValues" to preference.entryValues,
                                 ),
@@ -487,7 +631,7 @@ object MihonInvoker {
                                 mapOf(
                                     "title" to preference.title,
                                     "summary" to (preference.summary ?: ""),
-                                    "values" to preference.getDefaultValue(),
+                                    "values" to preference.currentValue,
                                     "entries" to preference.entries,
                                     "entryValues" to preference.entryValues,
                                 ),
@@ -498,9 +642,10 @@ object MihonInvoker {
         }
     }
 
-    private fun applyPreferences(
+    fun applyPreferences(
         data: DataBody,
         source: Any,
+        skipPreferenceKey: String? = null,
     ) {
         val preferences = data.preferences ?: return
         val sourceId =
@@ -513,6 +658,7 @@ object MihonInvoker {
         val editor = prefs.edit()
         for (prefMap in preferences) {
             val rawKey = prefMap["key"] as? String ?: continue
+            if (rawKey == skipPreferenceKey) continue
             // Java Preferences has 80 char limit for keys, hash long keys
             val key =
                 if (rawKey.length > 80) {

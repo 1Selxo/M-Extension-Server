@@ -27,10 +27,12 @@ class DalvikHandler {
 
             // Load extension
             val loadedExtension = MExtensionServerLoader.loadExtensionFromBase64(dataBody.data)
+            val selectedSource = MihonInvoker.selectSource(loadedExtension.sources, dataBody)
+            MihonInvoker.preparePreferences(dataBody, selectedSource)
 
             // Get domain from source
             val domain =
-                loadedExtension.sources.firstOrNull()?.let { source ->
+                selectedSource.let { source ->
                     try {
                         val baseUrl = source.javaClass.getMethod("getBaseUrl").invoke(source) as String
                         java.net.URI(baseUrl).host
@@ -61,7 +63,7 @@ class DalvikHandler {
                             }.distinctBy { it.name }
                     }?.toList()
             val network =
-                loadedExtension.sources.firstOrNull()?.let { source ->
+                selectedSource.let { source ->
                     when (source) {
                         is HttpSource -> source.network
                         is AnimeHttpSource -> source.network

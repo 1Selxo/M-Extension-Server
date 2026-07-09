@@ -132,7 +132,16 @@ object BytecodeEditor {
     private fun transform(pair: Pair<Path, ByteArray>): Pair<Path, ByteArray> {
         // Read the class and prepare to modify it
         val cr = ClassReader(pair.second)
-        val cw = ClassWriter(cr, 0)
+        // dex2jar can emit stale stack-map frames for obfuscated Kotlin default
+        // methods. Recompute them while rewriting Android class references so
+        // the resulting JAR passes normal JVM bytecode verification.
+        val cw =
+            object : ClassWriter(cr, COMPUTE_FRAMES or COMPUTE_MAXS) {
+                override fun getCommonSuperClass(
+                    type1: String,
+                    type2: String,
+                ): String = "java/lang/Object"
+            }
         // Modify the class
         cr.accept(
             object : ClassVisitor(Opcodes.ASM5, cw) {
@@ -259,7 +268,7 @@ object BytecodeEditor {
                     }
                 }
             },
-            0,
+            ClassReader.EXPAND_FRAMES,
         )
         return pair.first to cw.toByteArray()
     }

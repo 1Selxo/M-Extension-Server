@@ -2,6 +2,13 @@
 
 M-Extension-Server is a lightweight, headless service for running Mihon (Tachiyomi)/Aniyomi extensions (APKs). It dynamically loads extensions from Base64-encoded APKs, executes catalogue and content methods (manga/anime), and returns results via a small HTTP API.
 
+## Mangatan compatibility
+
+The `v1.0.4.1` release adds the bridge protocol used by Mangatan for
+factory-created sources and live extension preferences. A compatible server
+advertises `mangatanMihonBridge`, `sourceFactory`, and `preferenceCallbacks`
+from `GET /capabilities`.
+
 ## Credits
 
 The `AndroidCompat` module was originally developed by [@null-dev](https://github.com/null-dev) for [TachiWeb-Server](https://github.com/Tachiweb/TachiWeb-server) and is licensed under `Apache License Version 2.0`.
