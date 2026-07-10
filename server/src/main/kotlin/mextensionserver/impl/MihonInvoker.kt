@@ -848,7 +848,7 @@ object MihonInvoker {
                         filter
                     }
                     is AnimeFilter.Group<*> -> {
-                        val groupFilter = filter as AnimeFilter.Group<Filter<*>>
+                        val groupFilter = filter as AnimeFilter.Group<AnimeFilter<*>>
                         val jGroup = jFilters.find { it.name == groupFilter.name }
                         if (jGroup != null) {
                             val subJFilters = jGroup.stateList

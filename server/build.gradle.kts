@@ -15,6 +15,7 @@ plugins {
 
 dependencies {
     implementation(libs.bundles.okhttp)
+    testImplementation(kotlin("test"))
 
     // AndroidCompat
     implementation(project(":AndroidCompat"))
