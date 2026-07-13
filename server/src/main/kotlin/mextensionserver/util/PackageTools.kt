@@ -127,7 +127,10 @@ object PackageTools {
         }
     }
 
-    val jarLoaderMap = mutableMapOf<String, URLClassLoader>()
+    data class LoadedSource(
+        val instance: Any,
+        val classLoader: URLClassLoader,
+    )
 
     /**
      * loads the extension main class called [className] from the jar located at [jarPath]
@@ -137,11 +140,19 @@ object PackageTools {
         jarFile: File,
         className: String,
         apkFile: File? = null,
-    ): Any {
+    ): LoadedSource {
         val urls = mutableListOf(jarFile.toURI().toURL())
         apkFile?.let { urls.add(it.toURI().toURL()) } // Add APK for resources
         val classLoader = URLClassLoader(urls.toTypedArray(), PackageTools::class.java.classLoader)
-        val classToLoad = Class.forName(className, false, classLoader)
-        return classToLoad.getDeclaredConstructor().newInstance()
+        try {
+            val classToLoad = Class.forName(className, false, classLoader)
+            return LoadedSource(
+                instance = classToLoad.getDeclaredConstructor().newInstance(),
+                classLoader = classLoader,
+            )
+        } catch (error: Throwable) {
+            classLoader.close()
+            throw error
+        }
     }
 }

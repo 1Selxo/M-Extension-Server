@@ -14,7 +14,9 @@ import mextensionserver.util.PackageTools.dex2jar
 import mextensionserver.util.PackageTools.getPackageInfo
 import mextensionserver.util.PackageTools.loadExtensionSources
 import java.io.File
+import java.net.URLClassLoader
 import java.nio.file.Files
+import java.security.MessageDigest
 import java.util.Base64
 import java.util.UUID
 
@@ -22,16 +24,25 @@ object MExtensionServerLoader {
     private val logger = KotlinLogging.logger {}
     private val tempDir = Files.createTempDirectory("mextensionserver").toFile()
 
+    // Extensions retain pagination iterators and other request state. Keep one
+    // instance per APK for the server lifetime instead of decoding it per call.
+    private val loadedExtensions =
+        ExtensionInstanceCache(
+            keyOf = ::sha256,
+            load = ::loadExtension,
+            dispose = LoadedExtension::close,
+        )
+
     private const val MANGA_PACKAGE = "tachiyomi.extension"
     private const val ANIME_PACKAGE = "tachiyomi.animeextension"
     private const val METADATA_SOURCE_CLASS_SUFFIX = ".class"
 
     init {
-        // Clean up temp directory on shutdown
+        // Close classloaders before deleting their JARs, including on JVM exit.
         try {
             Runtime.getRuntime().addShutdownHook(
                 Thread {
-                    tempDir.deleteRecursively()
+                    cleanupTempFiles()
                 },
             )
         } catch (e: IllegalStateException) {
@@ -39,16 +50,32 @@ object MExtensionServerLoader {
         }
     }
 
-    data class LoadedExtension(
+    class LoadedExtension(
         val sources: List<Any>,
         val packageInfo: PackageInfo,
         val jarFile: File,
-    )
+        private val classLoader: URLClassLoader,
+    ) : AutoCloseable {
+        override fun close() {
+            try {
+                classLoader.close()
+            } finally {
+                if (jarFile.exists() && !jarFile.delete()) {
+                    logger.warn { "Failed to delete cached extension JAR ${jarFile.absolutePath}" }
+                }
+            }
+        }
+    }
 
-    fun loadExtensionFromBase64(base64Data: String): LoadedExtension {
-        val apkData = Base64.getDecoder().decode(base64Data)
+    fun <T> invokeWithExtension(
+        base64Data: String,
+        block: (LoadedExtension) -> T,
+    ): T = loadedExtensions.use(Base64.getDecoder().decode(base64Data), block)
+
+    private fun loadExtension(apkData: ByteArray): LoadedExtension {
         val tempApkFile = File(tempDir, "extension-${UUID.randomUUID()}.apk")
-        val apkName = tempApkFile.name
+        val jarFile = File(tempDir, "extension-${UUID.randomUUID()}.jar")
+        var classLoader: URLClassLoader? = null
         try {
             // Write APK data to temp file
             tempApkFile.writeBytes(apkData)
@@ -74,7 +101,6 @@ object MExtensionServerLoader {
             logger.debug { "Main class for extension is $className" }
 
             // Convert to JAR
-            val jarFile = File(tempDir, "extension-${UUID.randomUUID()}.jar")
             val dexFile = File(tempApkFile.absolutePath)
 
             dex2jar(dexFile, jarFile)
@@ -83,7 +109,9 @@ object MExtensionServerLoader {
             Extension.extractAssetsFromApk(tempApkFile, jarFile)
 
             // Load extension sources
-            val extensionMainClassInstance = loadExtensionSources(jarFile, className, tempApkFile)
+            val loadedSource = loadExtensionSources(jarFile, className, tempApkFile)
+            val extensionMainClassInstance = loadedSource.instance
+            classLoader = loadedSource.classLoader
             val sources: List<Any> =
                 when (extensionMainClassInstance) {
                     is eu.kanade.tachiyomi.source.Source -> listOf(extensionMainClassInstance)
@@ -93,10 +121,15 @@ object MExtensionServerLoader {
                     else -> throw RuntimeException("Unknown source class type! ${extensionMainClassInstance.javaClass}")
                 }
 
-            return LoadedExtension(sources, packageInfo, jarFile)
-        } catch (e: Exception) {
-            logger.error(e) { "Failed to load extension from base64 data" }
-            throw e
+            return LoadedExtension(sources, packageInfo, jarFile, loadedSource.classLoader)
+        } catch (error: Throwable) {
+            try {
+                classLoader?.close()
+            } finally {
+                jarFile.delete()
+            }
+            logger.error(error) { "Failed to load extension from base64 data" }
+            throw error
         } finally {
             // Clean up APK file
             if (tempApkFile.exists()) {
@@ -105,15 +138,27 @@ object MExtensionServerLoader {
         }
     }
 
+    private fun sha256(data: ByteArray): String =
+        MessageDigest
+            .getInstance("SHA-256")
+            .digest(data)
+            .joinToString(separator = "") { byte -> "%02x".format(byte) }
+
     fun cleanupTempFiles() {
         try {
-            tempDir.listFiles()?.forEach { file ->
-                if (file.isFile) {
-                    file.delete()
-                }
-            }
+            loadedExtensions.close()
         } catch (e: Exception) {
-            logger.warn(e) { "Failed to cleanup temp files" }
+            logger.warn(e) { "Failed to close cached extensions" }
+        } finally {
+            try {
+                tempDir.listFiles()?.forEach { file ->
+                    if (file.isFile) {
+                        file.delete()
+                    }
+                }
+            } catch (e: Exception) {
+                logger.warn(e) { "Failed to cleanup temp files" }
+            }
         }
     }
 }

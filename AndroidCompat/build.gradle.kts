@@ -48,3 +48,7 @@ dependencies {
     implementation(libs.bundles.twelvemonkeys)
     implementation(libs.imageio.webp)
 }
+
+tasks.test {
+    useJUnitPlatform()
+}
