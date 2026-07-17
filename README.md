@@ -6,8 +6,8 @@ M-Extension-Server is a lightweight, headless service for running Mihon (Tachiyo
 
 The `v1.0.4.1` release adds the bridge protocol used by Mangatan for
 factory-created sources and live extension preferences. A compatible server
-advertises `mangatanMihonBridge`, `sourceFactory`, and `preferenceCallbacks`
-from `GET /capabilities`.
+advertises `mangatanMihonBridge`, `sourceFactory`, `preferenceCallbacks`,
+`sourceUrls`, and `imageProxy` from `GET /capabilities`.
 
 ## Credits
 

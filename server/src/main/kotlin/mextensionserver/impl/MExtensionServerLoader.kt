@@ -145,6 +145,7 @@ object MExtensionServerLoader {
             .joinToString(separator = "") { byte -> "%02x".format(byte) }
 
     fun cleanupTempFiles() {
+        MihonImageProxy.clear()
         try {
             loadedExtensions.close()
         } catch (e: Exception) {

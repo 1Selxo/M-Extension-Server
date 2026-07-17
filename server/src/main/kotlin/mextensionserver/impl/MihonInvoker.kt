@@ -5,6 +5,7 @@ import androidx.preference.CheckBoxPreference
 import androidx.preference.EditTextPreference
 import androidx.preference.ListPreference
 import androidx.preference.MultiSelectListPreference
+import androidx.preference.Preference
 import androidx.preference.PreferenceScreen
 import androidx.preference.SwitchPreferenceCompat
 import eu.kanade.tachiyomi.animesource.AnimeCatalogueSource
@@ -65,7 +66,9 @@ object MihonInvoker {
             "getLatestManga" -> invokeGetLatestManga(source as CatalogueSource, data.page ?: 1)
             "getSearchManga" -> invokeGetSearchManga(source as CatalogueSource, data.page ?: 1, data.search ?: "", data.filterList)
             "getDetailsManga" -> invokeGetDetailsManga(source as CatalogueSource, data.mangaData)
+            "getMangaUrl" -> invokeGetMangaUrl(source as CatalogueSource, data.mangaData)
             "getChapterList" -> invokeGetChapterList(source as CatalogueSource, data.mangaData)
+            "getChapterUrl" -> invokeGetChapterUrl(source as CatalogueSource, data.chapterData)
             "getPageList" -> invokeGetPageList(source as CatalogueSource, data.chapterData)
             "preferencesManga" -> invokePreferencesManga(source as CatalogueSource)
             "setPreferenceManga" -> invokeSetPreferenceManga(source as CatalogueSource, data)
@@ -76,7 +79,9 @@ object MihonInvoker {
             "getLatestAnime" -> invokeGetLatestAnime(source as AnimeCatalogueSource, data.page ?: 1)
             "getSearchAnime" -> invokeGetSearchAnime(source as AnimeCatalogueSource, data.page ?: 1, data.search ?: "", data.filterList)
             "getDetailsAnime" -> invokeGetDetailsAnime(source as AnimeCatalogueSource, data.animeData)
+            "getAnimeUrl" -> invokeGetAnimeUrl(source as AnimeCatalogueSource, data.animeData)
             "getEpisodeList" -> invokeGetEpisodeList(source as AnimeCatalogueSource, data.animeData)
+            "getEpisodeUrl" -> invokeGetEpisodeUrl(source as AnimeCatalogueSource, data.episodeData)
             "getVideoList" -> invokeGetVideoList(source as AnimeCatalogueSource, data.episodeData)
             "preferencesAnime" -> invokePreferencesAnime(source as AnimeCatalogueSource)
             "setPreferenceAnime" -> invokeSetPreferenceAnime(source as AnimeCatalogueSource, data)
@@ -227,23 +232,23 @@ object MihonInvoker {
             throw IllegalArgumentException("Source must be HttpSource for getDetailsManga")
         }
 
-        val sManga =
-            SManga.create().apply {
-                url = mangaData.url ?: ""
-                title = mangaData.title ?: ""
-                artist = mangaData.artist
-                author = mangaData.author
-                description = mangaData.description
-                genre = mangaData.genre
-                status = mangaData.status ?: 0
-                thumbnail_url = mangaData.thumbnail_url
-                initialized = mangaData.initialized ?: false
-            }
-
         return runBlocking {
-            val detailedManga = source.getMangaDetails(sManga)
+            val detailedManga = source.getMangaDetails(mangaData.toSManga())
             detailedManga.toJManga()
         }
+    }
+
+    private fun invokeGetMangaUrl(
+        source: CatalogueSource,
+        mangaData: MangaData?,
+    ): String {
+        if (mangaData == null) {
+            throw IllegalArgumentException("mangaData is required for getMangaUrl")
+        }
+        if (source !is HttpSource) {
+            throw IllegalArgumentException("Source must be HttpSource for getMangaUrl")
+        }
+        return source.getMangaUrl(mangaData.toSManga())
     }
 
     private fun invokeGetChapterList(
@@ -258,23 +263,23 @@ object MihonInvoker {
             throw IllegalArgumentException("Source must be HttpSource for getChapterList")
         }
 
-        val sManga =
-            SManga.create().apply {
-                url = mangaData.url ?: ""
-                title = mangaData.title ?: ""
-                artist = mangaData.artist
-                author = mangaData.author
-                description = mangaData.description
-                genre = mangaData.genre
-                status = mangaData.status ?: 0
-                thumbnail_url = mangaData.thumbnail_url
-                initialized = mangaData.initialized ?: false
-            }
-
         return runBlocking {
-            val chapters = source.getChapterList(sManga)
+            val chapters = source.getChapterList(mangaData.toSManga())
             chapters
         }
+    }
+
+    private fun invokeGetChapterUrl(
+        source: CatalogueSource,
+        chapterData: ChapterData?,
+    ): String {
+        if (chapterData == null) {
+            throw IllegalArgumentException("chapterData is required for getChapterUrl")
+        }
+        if (source !is HttpSource) {
+            throw IllegalArgumentException("Source must be HttpSource for getChapterUrl")
+        }
+        return source.getChapterUrl(chapterData.toSChapter())
     }
 
     private fun invokeGetPageList(
@@ -289,22 +294,15 @@ object MihonInvoker {
             throw IllegalArgumentException("Source must be HttpSource for getPageList")
         }
 
-        val sChapter =
-            SChapter.create().apply {
-                url = chapterData.url ?: ""
-                name = chapterData.name ?: ""
-                date_upload = chapterData.date_upload ?: 0L
-                chapter_number = chapterData.chapter_number ?: 0f
-                scanlator = chapterData.scanlator
-            }
-
         return runBlocking {
-            val pages = source.getPageList(sChapter)
+            val pages = source.getPageList(chapterData.toSChapter())
             pages.map { page ->
                 JPage(
                     index = page.index,
                     url = page.url,
-                    imageUrl = source.imageRequest(page).url.toString(),
+                    imageUrl =
+                        MihonImageProxy.register(source, page)
+                            ?: source.imageRequest(page).url.toString(),
                 )
             }
         }
@@ -381,23 +379,23 @@ object MihonInvoker {
             throw IllegalArgumentException("Source must be AnimeHttpSource for getDetailsAnime")
         }
 
-        val sAnime =
-            SAnime.create().apply {
-                url = animeData.url ?: ""
-                title = animeData.title ?: ""
-                artist = animeData.artist
-                author = animeData.author
-                description = animeData.description
-                genre = animeData.genre
-                status = animeData.status ?: 0
-                thumbnail_url = animeData.thumbnail_url
-                initialized = animeData.initialized ?: false
-            }
-
         return runBlocking {
-            val detailedAnime = source.getAnimeDetails(sAnime)
+            val detailedAnime = source.getAnimeDetails(animeData.toSAnime())
             detailedAnime.toJAnime()
         }
+    }
+
+    private fun invokeGetAnimeUrl(
+        source: AnimeCatalogueSource,
+        animeData: AnimeData?,
+    ): String {
+        if (animeData == null) {
+            throw IllegalArgumentException("animeData is required for getAnimeUrl")
+        }
+        if (source !is AnimeHttpSource) {
+            throw IllegalArgumentException("Source must be AnimeHttpSource for getAnimeUrl")
+        }
+        return source.getAnimeUrl(animeData.toSAnime())
     }
 
     private fun invokeGetEpisodeList(
@@ -412,23 +410,23 @@ object MihonInvoker {
             throw IllegalArgumentException("Source must be AnimeHttpSource for getEpisodeList")
         }
 
-        val sAnime =
-            SAnime.create().apply {
-                url = animeData.url ?: ""
-                title = animeData.title ?: ""
-                artist = animeData.artist
-                author = animeData.author
-                description = animeData.description
-                genre = animeData.genre
-                status = animeData.status ?: 0
-                thumbnail_url = animeData.thumbnail_url
-                initialized = animeData.initialized ?: false
-            }
-
         return runBlocking {
-            val episodes = source.getEpisodeList(sAnime)
+            val episodes = source.getEpisodeList(animeData.toSAnime())
             episodes
         }
+    }
+
+    private fun invokeGetEpisodeUrl(
+        source: AnimeCatalogueSource,
+        episodeData: EpisodeData?,
+    ): String {
+        if (episodeData == null) {
+            throw IllegalArgumentException("episodeData is required for getEpisodeUrl")
+        }
+        if (source !is AnimeHttpSource) {
+            throw IllegalArgumentException("Source must be AnimeHttpSource for getEpisodeUrl")
+        }
+        return source.getEpisodeUrl(episodeData.toSEpisode())
     }
 
     private fun invokeGetVideoList(
@@ -443,20 +441,55 @@ object MihonInvoker {
             throw IllegalArgumentException("Source must be AnimeHttpSource for getVideoList")
         }
 
-        val sEpisode =
-            SEpisode.create().apply {
-                url = episodeData.url ?: ""
-                name = episodeData.name ?: ""
-                date_upload = episodeData.date_upload ?: 0L
-                episode_number = episodeData.episode_number ?: 0f
-                scanlator = episodeData.scanlator
-            }
-
         return runBlocking {
-            val videos = source.getVideoList(sEpisode)
+            val videos = source.getVideoList(episodeData.toSEpisode())
             videos
         }
     }
+
+    private fun MangaData.toSManga(): SManga =
+        SManga.create().also { manga ->
+            manga.url = url ?: ""
+            manga.title = title ?: ""
+            manga.artist = artist
+            manga.author = author
+            manga.description = description
+            manga.genre = genre
+            manga.status = status ?: 0
+            manga.thumbnail_url = thumbnail_url
+            manga.initialized = initialized ?: false
+        }
+
+    private fun ChapterData.toSChapter(): SChapter =
+        SChapter.create().also { chapter ->
+            chapter.url = url ?: ""
+            chapter.name = name ?: ""
+            chapter.date_upload = date_upload ?: 0L
+            chapter.chapter_number = chapter_number ?: 0f
+            chapter.scanlator = scanlator
+        }
+
+    private fun AnimeData.toSAnime(): SAnime =
+        SAnime.create().also { anime ->
+            anime.url = url ?: ""
+            anime.title = title ?: ""
+            anime.artist = artist
+            anime.author = author
+            anime.description = description
+            anime.genre = genre
+            anime.status = status ?: 0
+            anime.thumbnail_url = thumbnail_url
+            anime.initialized = initialized ?: false
+        }
+
+    private fun EpisodeData.toSEpisode(): SEpisode =
+        SEpisode.create().also { episode ->
+            episode.url = url ?: ""
+            episode.name = name ?: ""
+            episode.date_upload = date_upload ?: 0L
+            episode.episode_number = episode_number ?: 0f
+            episode.scanlator = scanlator
+        }
 
     private fun invokePreferencesAnime(source: AnimeCatalogueSource): MutableList<Map<String, Any>> {
         val preferences = mutableListOf<Map<String, Any>>()
@@ -528,16 +561,23 @@ object MihonInvoker {
             }
         val changedValue = changedData?.let(::preferenceValue)
         if (preference != null && changedValue != null) {
-            val oldValue = preference.currentValue
-            preference.saveNewValue(changedValue)
-            if (!preference.callChangeListener(changedValue)) {
-                preference.saveNewValue(oldValue)
-            }
+            applyPreferenceChange(preference, changedValue)
         }
 
         val preferences = mutableListOf<Map<String, Any>>()
         processPreferences(screen, preferences)
         return preferences
+    }
+
+    internal fun applyPreferenceChange(
+        preference: Preference,
+        changedValue: Any,
+    ) {
+        // AndroidX asks the listener first. A false result can mean the
+        // listener normalized and persisted the value itself.
+        if (preference.callChangeListener(changedValue)) {
+            preference.saveNewValue(changedValue)
+        }
     }
 
     private fun preferenceValue(data: Map<String, Any>): Any? =
@@ -672,6 +712,11 @@ object MihonInvoker {
                 } else {
                     rawKey
                 }
+            // The app sends its persisted preference snapshot on every bridge
+            // request. Use it to initialize a fresh JVM preference store, but
+            // do not let an older snapshot overwrite a value that the source
+            // has already normalized and persisted itself.
+            if (prefs.contains(key)) continue
             when {
                 prefMap.containsKey("checkBoxPreference") -> {
                     val checkBox = prefMap["checkBoxPreference"] as? Map<*, *>

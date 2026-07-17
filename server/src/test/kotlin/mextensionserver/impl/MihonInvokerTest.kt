@@ -1,10 +1,12 @@
 package mextensionserver.impl
 
+import androidx.preference.Preference
 import eu.kanade.tachiyomi.animesource.model.AnimeFilter
 import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
 import mextensionserver.model.JFilterList
 import mextensionserver.model.JGroupFilter
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class MihonInvokerTest {
@@ -40,6 +42,38 @@ class MihonInvokerTest {
         assertTrue(child.state)
     }
 
+    @Test
+    fun `keeps normalized value saved by rejecting preference listener`() {
+        val preference = TestPreference("https://old.example")
+        preference.setOnPreferenceChangeListener { pref, newValue ->
+            val normalized = (newValue as String).substringBefore("/path")
+            pref.saveNewValue(normalized)
+            false
+        }
+
+        MihonInvoker.applyPreferenceChange(
+            preference,
+            "https://new.example/path",
+        )
+
+        assertEquals("https://new.example", preference.currentValue)
+    }
+
+    @Test
+    fun `persists value accepted by preference listener`() {
+        val preference = TestPreference("old")
+        var valueSeenByListener: Any? = null
+        preference.setOnPreferenceChangeListener { pref, _ ->
+            valueSeenByListener = pref.currentValue
+            true
+        }
+
+        MihonInvoker.applyPreferenceChange(preference, "new")
+
+        assertEquals("old", valueSeenByListener)
+        assertEquals("new", preference.currentValue)
+    }
+
     private fun convertAnimeFilterList(
         originalFilters: AnimeFilterList,
         requestedFilters: List<JFilterList>,
@@ -59,4 +93,16 @@ class MihonInvokerTest {
     private class TestGroup(
         children: List<TestCheckBox>,
     ) : AnimeFilter.Group<TestCheckBox>("Group", children)
+
+    private class TestPreference(
+        initialValue: Any,
+    ) : Preference(null) {
+        private var value: Any = initialValue
+
+        override fun getCurrentValue(): Any = value
+
+        override fun saveNewValue(value: Any) {
+            this.value = value
+        }
+    }
 }

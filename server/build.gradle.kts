@@ -15,6 +15,7 @@ plugins {
 
 dependencies {
     implementation(libs.bundles.okhttp)
+    implementation(libs.icu4j.charset)
     testImplementation(kotlin("test"))
 
     // AndroidCompat
@@ -38,7 +39,7 @@ sourceSets {
 }
 
 // should be bumped with each stable release
-val m_extension_serverVersion = "v1.0.4.4"
+val m_extension_serverVersion = "v1.0.4.5"
 
 // counts commit count on master
 val m_extension_serverRevision = runCatching {
