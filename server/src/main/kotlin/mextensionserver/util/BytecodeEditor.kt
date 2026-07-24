@@ -86,7 +86,7 @@ object BytecodeEditor {
 
         parsed.values.forEach { (_, classNode) ->
             classNode.methods.forEach { method ->
-                repairAllocations(method, missingConstructors, constructorsToAdd)
+                repairAllocations(method, parsed, missingConstructors, constructorsToAdd)
             }
         }
         constructorsToAdd.forEach { (className, constructors) ->
@@ -105,6 +105,7 @@ object BytecodeEditor {
 
     private fun repairAllocations(
         method: MethodNode,
+        classes: Map<String, Pair<Path, ClassNode>>,
         missingConstructors: Map<String, ClassNode>,
         constructorsToAdd: MutableMap<String, MutableMap<String, String>>,
     ) {
@@ -112,6 +113,21 @@ object BytecodeEditor {
         instructions.forEachIndexed { index, instruction ->
             val allocation = instruction as? TypeInsnNode ?: return@forEachIndexed
             if (allocation.opcode != Opcodes.NEW) return@forEachIndexed
+            val allocatedMissingClass = missingConstructors[allocation.desc]
+            if (allocatedMissingClass != null) {
+                val superName = allocatedMissingClass.superName ?: return@forEachIndexed
+                val constructorIndex =
+                    findMatchingConstructor(instructions, index, superName)
+                        ?: return@forEachIndexed
+                val constructor = instructions[constructorIndex] as MethodInsnNode
+
+                logger.debug {
+                    "Repairing dex2jar constructor $superName -> ${allocation.desc} in ${method.name}${method.desc}"
+                }
+                constructorsToAdd.getOrPut(allocation.desc, ::mutableMapOf)[constructor.desc] = superName
+                constructor.owner = allocation.desc
+                return@forEachIndexed
+            }
             val constructorIndex =
                 findMatchingConstructor(instructions, index, allocation.desc)
                     ?: return@forEachIndexed
@@ -121,6 +137,7 @@ object BytecodeEditor {
                     instructions,
                     constructorIndex,
                     allocation.desc,
+                    classes,
                     missingConstructors,
                 ) ?: return@forEachIndexed
 
@@ -160,6 +177,7 @@ object BytecodeEditor {
         instructions: Array<AbstractInsnNode>,
         constructorIndex: Int,
         allocatedSuperClass: String,
+        classes: Map<String, Pair<Path, ClassNode>>,
         missingConstructors: Map<String, ClassNode>,
     ): String? {
         val candidates = mutableSetOf<String>()
@@ -190,10 +208,25 @@ object BytecodeEditor {
             collectTypedUses(instructions, constructorIndex + 1, null, candidates)
         }
 
-        return candidates
-            .filter { missingConstructors[it]?.superName == allocatedSuperClass }
-            .distinct()
-            .singleOrNull()
+        val eligible =
+            missingConstructors.values
+                .filter { it.superName == allocatedSuperClass }
+        val exactMatches = eligible.filter { it.name in candidates }
+        val typedMatches =
+            eligible.filter { candidate ->
+                candidates.any { expectedType ->
+                    isAssignableTo(candidate.name, expectedType, classes)
+                }
+            }
+
+        return exactMatches.singleOrNull()?.name
+            ?: typedMatches.singleOrNull()?.name
+            ?: eligible
+                .singleOrNull()
+                ?.takeIf {
+                    isAbstractOrInterface(allocatedSuperClass, classes) ||
+                        following?.opcode == Opcodes.ATHROW
+                }?.name
     }
 
     private fun collectTypedUses(
@@ -223,33 +256,43 @@ object BytecodeEditor {
                         Opcodes.GETSTATIC -> produced = fieldType.size
                         Opcodes.PUTSTATIC -> {
                             consumed = fieldType.size
-                            if (consumed == stackSize) {
+                            if (stackSize == fieldType.size) {
                                 fieldType.internalNameOrNull()?.let(candidates::add)
                             }
                         }
                         Opcodes.GETFIELD -> {
                             consumed = 1
                             produced = fieldType.size
-                            if (consumed == stackSize) candidates.add(instruction.owner)
+                            if (stackSize == 1) candidates.add(instruction.owner)
                         }
                         Opcodes.PUTFIELD -> {
                             consumed = 1 + fieldType.size
-                            if (consumed == stackSize) candidates.add(instruction.owner)
+                            when (stackSize) {
+                                fieldType.size -> fieldType.internalNameOrNull()?.let(candidates::add)
+                                consumed -> candidates.add(instruction.owner)
+                            }
                         }
                     }
                 }
                 is MethodInsnNode -> {
                     val arguments = Type.getArgumentTypes(instruction.desc)
-                    consumed =
-                        arguments.sumOf(Type::getSize) +
+                    val argumentSlots = arguments.sumOf(Type::getSize)
+                    val receiverSlots =
                         if (instruction.opcode == Opcodes.INVOKESTATIC) 0 else 1
+                    consumed = argumentSlots + receiverSlots
                     produced = Type.getReturnType(instruction.desc).size
-                    if (consumed == stackSize) {
-                        if (instruction.opcode == Opcodes.INVOKESTATIC) {
-                            arguments.firstOrNull()?.internalNameOrNull()?.let(candidates::add)
-                        } else {
-                            candidates.add(instruction.owner)
-                        }
+                    if (stackSize == consumed && receiverSlots == 1) {
+                        candidates.add(instruction.owner)
+                    } else if (stackSize <= argumentSlots) {
+                        val trackedArgumentOffset = argumentSlots - stackSize
+                        var offset = 0
+                        arguments
+                            .firstOrNull { argument ->
+                                val startsHere = offset == trackedArgumentOffset
+                                offset += argument.size
+                                startsHere
+                            }?.internalNameOrNull()
+                            ?.let(candidates::add)
                     }
                 }
                 is VarInsnNode -> {
@@ -328,6 +371,38 @@ object BytecodeEditor {
             Type.ARRAY -> descriptor
             else -> null
         }
+
+    private fun isAssignableTo(
+        className: String,
+        target: String,
+        classes: Map<String, Pair<Path, ClassNode>>,
+        visited: MutableSet<String> = mutableSetOf(),
+    ): Boolean {
+        if (className == target) return true
+        if (!visited.add(className)) return false
+        val classNode = classes[className]?.second ?: readClassNode(className) ?: return false
+        return classNode.interfaces.any { isAssignableTo(it, target, classes, visited) } ||
+            classNode.superName?.let { isAssignableTo(it, target, classes, visited) } == true
+    }
+
+    private fun isAbstractOrInterface(
+        className: String,
+        classes: Map<String, Pair<Path, ClassNode>>,
+    ): Boolean {
+        val access = classes[className]?.second?.access ?: readClassNode(className)?.access ?: return false
+        return access and (Opcodes.ACC_ABSTRACT or Opcodes.ACC_INTERFACE) != 0
+    }
+
+    private fun readClassNode(className: String): ClassNode? {
+        val resource = "$className.class"
+        val bytes =
+            BytecodeEditor::class.java.classLoader
+                ?.getResourceAsStream(resource)
+                ?.use { it.readBytes() }
+                ?: ClassLoader.getSystemResourceAsStream(resource)?.use { it.readBytes() }
+                ?: return null
+        return ClassNode(Opcodes.ASM9).also { ClassReader(bytes).accept(it, ClassReader.SKIP_CODE) }
+    }
 
     private fun forwardingConstructor(
         superName: String,

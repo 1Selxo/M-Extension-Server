@@ -26,16 +26,19 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.runBlocking
 import mextensionserver.model.AnimeData
 import mextensionserver.model.AnimeResponse
+import mextensionserver.model.BridgeMemo
 import mextensionserver.model.ChapterData
 import mextensionserver.model.DataBody
 import mextensionserver.model.EpisodeData
 import mextensionserver.model.JAnime
+import mextensionserver.model.JChapter
 import mextensionserver.model.JFilterList
 import mextensionserver.model.JManga
 import mextensionserver.model.JPage
 import mextensionserver.model.MangaData
 import mextensionserver.model.MangaResponse
 import mextensionserver.model.toJAnime
+import mextensionserver.model.toJChapter
 import mextensionserver.model.toJManga
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
@@ -233,7 +236,14 @@ object MihonInvoker {
         }
 
         return runBlocking {
-            val detailedManga = source.getMangaDetails(mangaData.toSManga())
+            val detailedManga =
+                source
+                    .getMangaUpdate(
+                        manga = mangaData.toSManga(),
+                        chapters = emptyList(),
+                        fetchDetails = true,
+                        fetchChapters = false,
+                    ).manga
             detailedManga.toJManga()
         }
     }
@@ -254,7 +264,7 @@ object MihonInvoker {
     private fun invokeGetChapterList(
         source: CatalogueSource,
         mangaData: MangaData?,
-    ): List<SChapter> {
+    ): List<JChapter> {
         if (mangaData == null) {
             throw IllegalArgumentException("mangaData is required for getChapterList")
         }
@@ -264,8 +274,14 @@ object MihonInvoker {
         }
 
         return runBlocking {
-            val chapters = source.getChapterList(mangaData.toSManga())
-            chapters
+            source
+                .getMangaUpdate(
+                    manga = mangaData.toSManga(),
+                    chapters = emptyList(),
+                    fetchDetails = false,
+                    fetchChapters = true,
+                ).chapters
+                .map(SChapter::toJChapter)
         }
     }
 
@@ -449,7 +465,9 @@ object MihonInvoker {
 
     private fun MangaData.toSManga(): SManga =
         SManga.create().also { manga ->
-            manga.url = url ?: ""
+            val decodedUrl = BridgeMemo.decode(url ?: "")
+            manga.url = decodedUrl.url
+            manga.memo = decodedUrl.memo
             manga.title = title ?: ""
             manga.artist = artist
             manga.author = author
@@ -462,7 +480,9 @@ object MihonInvoker {
 
     private fun ChapterData.toSChapter(): SChapter =
         SChapter.create().also { chapter ->
-            chapter.url = url ?: ""
+            val decodedUrl = BridgeMemo.decode(url ?: "")
+            chapter.url = decodedUrl.url
+            chapter.memo = decodedUrl.memo
             chapter.name = name ?: ""
             chapter.date_upload = date_upload ?: 0L
             chapter.chapter_number = chapter_number ?: 0f

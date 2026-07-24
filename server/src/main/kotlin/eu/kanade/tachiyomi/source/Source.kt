@@ -3,6 +3,7 @@ package eu.kanade.tachiyomi.source
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
+import eu.kanade.tachiyomi.source.model.SMangaUpdate
 import eu.kanade.tachiyomi.util.lang.awaitSingle
 import rx.Observable
 
@@ -42,6 +43,21 @@ interface Source {
      */
     @Suppress("DEPRECATION")
     suspend fun getChapterList(manga: SManga): List<SChapter> = fetchChapterList(manga).awaitSingle()
+
+    /**
+     * Combined update API introduced by the TachiyomiX 1.6 source API.
+     * Older extensions continue through the legacy methods above.
+     */
+    suspend fun getMangaUpdate(
+        manga: SManga,
+        chapters: List<SChapter>,
+        fetchDetails: Boolean,
+        fetchChapters: Boolean,
+    ): SMangaUpdate =
+        SMangaUpdate(
+            manga = if (fetchDetails) getMangaDetails(manga) else manga,
+            chapters = if (fetchChapters) getChapterList(manga) else chapters,
+        )
 
     /**
      * Get the list of pages a chapter has. Pages should be returned

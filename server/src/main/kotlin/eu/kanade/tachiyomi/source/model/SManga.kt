@@ -2,6 +2,7 @@
 
 package eu.kanade.tachiyomi.source.model
 
+import kotlinx.serialization.json.JsonObject
 import java.io.Serializable
 
 interface SManga : Serializable {
@@ -24,6 +25,8 @@ interface SManga : Serializable {
     var update_strategy: UpdateStrategy
 
     var initialized: Boolean
+
+    var memo: JsonObject
 
     fun copyFrom(other: SManga) {
         if (other.author != null) {
@@ -51,6 +54,8 @@ interface SManga : Serializable {
         if (!initialized) {
             initialized = other.initialized
         }
+
+        memo = other.memo
     }
 
     companion object {
