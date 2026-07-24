@@ -15,6 +15,17 @@ import org.objectweb.asm.FieldVisitor
 import org.objectweb.asm.Handle
 import org.objectweb.asm.MethodVisitor
 import org.objectweb.asm.Opcodes
+import org.objectweb.asm.Type
+import org.objectweb.asm.tree.AbstractInsnNode
+import org.objectweb.asm.tree.ClassNode
+import org.objectweb.asm.tree.FieldInsnNode
+import org.objectweb.asm.tree.InsnNode
+import org.objectweb.asm.tree.IntInsnNode
+import org.objectweb.asm.tree.LdcInsnNode
+import org.objectweb.asm.tree.MethodInsnNode
+import org.objectweb.asm.tree.MethodNode
+import org.objectweb.asm.tree.TypeInsnNode
+import org.objectweb.asm.tree.VarInsnNode
 import java.nio.file.FileSystems
 import java.nio.file.Files
 import java.nio.file.Path
@@ -31,14 +42,432 @@ object BytecodeEditor {
      */
     fun fixAndroidClasses(jarFile: Path) {
         FileSystems.newFileSystem(jarFile, null as ClassLoader?)?.use {
-            Files
-                .walk(it.getPath("/"))
-                .asSequence()
-                .filterNotNull()
-                .filterNot(Files::isDirectory)
-                .mapNotNull(::getClassBytes)
-                .map(::transform)
-                .forEach(::write)
+            Files.walk(it.getPath("/")).use { paths ->
+                val classes =
+                    paths
+                        .asSequence()
+                        .filterNotNull()
+                        .filterNot(Files::isDirectory)
+                        .mapNotNull(::getClassBytes)
+                        .toList()
+                val repairedClasses = repairMissingConstructors(classes)
+                val hierarchy = ClassHierarchy(repairedClasses.map(Pair<Path, ByteArray>::second))
+                repairedClasses
+                    .asSequence()
+                    .map { classBytes -> transform(classBytes, hierarchy) }
+                    .forEach(::write)
+            }
+        }
+    }
+
+    /**
+     * R8 can emit valid DEX classes without a JVM-style constructor and invoke
+     * their direct superclass constructor after new-instance. Dex2jar then
+     * incorrectly emits NEW for that superclass. Infer the intended subclass
+     * from the following typed use, add the missing forwarding constructor,
+     * and repair both instructions before JVM verification.
+     */
+    private fun repairMissingConstructors(classes: List<Pair<Path, ByteArray>>): List<Pair<Path, ByteArray>> {
+        val parsed =
+            classes.associate { (path, bytes) ->
+                val node = ClassNode(Opcodes.ASM9)
+                ClassReader(bytes).accept(node, 0)
+                node.name to (path to node)
+            }
+        val missingConstructors =
+            parsed.values
+                .map(Pair<Path, ClassNode>::second)
+                .filter {
+                    it.superName != null &&
+                        it.access and (Opcodes.ACC_ABSTRACT or Opcodes.ACC_INTERFACE) == 0 &&
+                        it.methods.none { method -> method.name == "<init>" }
+                }.associateBy(ClassNode::name)
+        val constructorsToAdd = mutableMapOf<String, MutableMap<String, String>>()
+
+        parsed.values.forEach { (_, classNode) ->
+            classNode.methods.forEach { method ->
+                repairAllocations(method, missingConstructors, constructorsToAdd)
+            }
+        }
+        constructorsToAdd.forEach { (className, constructors) ->
+            val classNode = missingConstructors.getValue(className)
+            constructors.forEach { (descriptor, superName) ->
+                classNode.methods.add(forwardingConstructor(superName, descriptor))
+            }
+        }
+
+        return parsed.values.map { (path, node) ->
+            val writer = ClassWriter(0)
+            node.accept(writer)
+            path to writer.toByteArray()
+        }
+    }
+
+    private fun repairAllocations(
+        method: MethodNode,
+        missingConstructors: Map<String, ClassNode>,
+        constructorsToAdd: MutableMap<String, MutableMap<String, String>>,
+    ) {
+        val instructions = method.instructions.toArray()
+        instructions.forEachIndexed { index, instruction ->
+            val allocation = instruction as? TypeInsnNode ?: return@forEachIndexed
+            if (allocation.opcode != Opcodes.NEW) return@forEachIndexed
+            val constructorIndex =
+                findMatchingConstructor(instructions, index, allocation.desc)
+                    ?: return@forEachIndexed
+            val constructor = instructions[constructorIndex] as MethodInsnNode
+            val target =
+                inferAllocatedClass(
+                    instructions,
+                    constructorIndex,
+                    allocation.desc,
+                    missingConstructors,
+                ) ?: return@forEachIndexed
+
+            logger.debug { "Repairing dex2jar allocation ${allocation.desc} -> $target in ${method.name}${method.desc}" }
+            constructorsToAdd.getOrPut(target, ::mutableMapOf)[constructor.desc] = allocation.desc
+            allocation.desc = target
+            constructor.owner = target
+        }
+    }
+
+    private fun findMatchingConstructor(
+        instructions: Array<AbstractInsnNode>,
+        allocationIndex: Int,
+        allocatedClass: String,
+    ): Int? {
+        var nestedAllocations = 1
+        for (index in allocationIndex + 1 until instructions.size) {
+            val instruction = instructions[index]
+            if (instruction is TypeInsnNode &&
+                instruction.opcode == Opcodes.NEW &&
+                instruction.desc == allocatedClass
+            ) {
+                nestedAllocations++
+            } else if (instruction is MethodInsnNode &&
+                instruction.opcode == Opcodes.INVOKESPECIAL &&
+                instruction.name == "<init>" &&
+                instruction.owner == allocatedClass
+            ) {
+                nestedAllocations--
+                if (nestedAllocations == 0) return index
+            }
+        }
+        return null
+    }
+
+    private fun inferAllocatedClass(
+        instructions: Array<AbstractInsnNode>,
+        constructorIndex: Int,
+        allocatedSuperClass: String,
+        missingConstructors: Map<String, ClassNode>,
+    ): String? {
+        val candidates = mutableSetOf<String>()
+        val following =
+            instructions
+                .drop(constructorIndex + 1)
+                .firstOrNull { it.opcode >= 0 }
+
+        if (following is VarInsnNode && following.opcode == Opcodes.ASTORE) {
+            val local = following.`var`
+            val start = instructions.indexOf(following) + 1
+            for (index in start until instructions.size) {
+                val instruction = instructions[index]
+                if (instruction is VarInsnNode &&
+                    instruction.opcode == Opcodes.ASTORE &&
+                    instruction.`var` == local
+                ) {
+                    break
+                }
+                if (instruction is VarInsnNode &&
+                    instruction.opcode == Opcodes.ALOAD &&
+                    instruction.`var` == local
+                ) {
+                    collectTypedUses(instructions, index + 1, local, candidates)
+                }
+            }
+        } else {
+            collectTypedUses(instructions, constructorIndex + 1, null, candidates)
+        }
+
+        return candidates
+            .filter { missingConstructors[it]?.superName == allocatedSuperClass }
+            .distinct()
+            .singleOrNull()
+    }
+
+    private fun collectTypedUses(
+        instructions: Array<AbstractInsnNode>,
+        start: Int,
+        local: Int?,
+        candidates: MutableSet<String>,
+    ) {
+        var stackSize = 1
+        for (index in start until minOf(instructions.size, start + 64)) {
+            val instruction = instructions[index]
+            if (instruction.opcode < 0) continue
+            if (instruction is VarInsnNode &&
+                local != null &&
+                instruction.opcode == Opcodes.ALOAD &&
+                instruction.`var` == local
+            ) {
+                break
+            }
+            var consumed = 0
+            var produced = 0
+            var preservesTrackedValue = false
+            when (instruction) {
+                is FieldInsnNode -> {
+                    val fieldType = Type.getType(instruction.desc)
+                    when (instruction.opcode) {
+                        Opcodes.GETSTATIC -> produced = fieldType.size
+                        Opcodes.PUTSTATIC -> {
+                            consumed = fieldType.size
+                            if (consumed == stackSize) {
+                                fieldType.internalNameOrNull()?.let(candidates::add)
+                            }
+                        }
+                        Opcodes.GETFIELD -> {
+                            consumed = 1
+                            produced = fieldType.size
+                            if (consumed == stackSize) candidates.add(instruction.owner)
+                        }
+                        Opcodes.PUTFIELD -> {
+                            consumed = 1 + fieldType.size
+                            if (consumed == stackSize) candidates.add(instruction.owner)
+                        }
+                    }
+                }
+                is MethodInsnNode -> {
+                    val arguments = Type.getArgumentTypes(instruction.desc)
+                    consumed =
+                        arguments.sumOf(Type::getSize) +
+                        if (instruction.opcode == Opcodes.INVOKESTATIC) 0 else 1
+                    produced = Type.getReturnType(instruction.desc).size
+                    if (consumed == stackSize) {
+                        if (instruction.opcode == Opcodes.INVOKESTATIC) {
+                            arguments.firstOrNull()?.internalNameOrNull()?.let(candidates::add)
+                        } else {
+                            candidates.add(instruction.owner)
+                        }
+                    }
+                }
+                is VarInsnNode -> {
+                    when (instruction.opcode) {
+                        Opcodes.ILOAD, Opcodes.FLOAD, Opcodes.ALOAD -> produced = 1
+                        Opcodes.LLOAD, Opcodes.DLOAD -> produced = 2
+                        Opcodes.ISTORE, Opcodes.FSTORE, Opcodes.ASTORE -> consumed = 1
+                        Opcodes.LSTORE, Opcodes.DSTORE -> consumed = 2
+                        else -> break
+                    }
+                }
+                is InsnNode -> {
+                    when (instruction.opcode) {
+                        in Opcodes.ACONST_NULL..Opcodes.DCONST_1 ->
+                            produced =
+                                if (instruction.opcode in Opcodes.LCONST_0..Opcodes.LCONST_1 ||
+                                    instruction.opcode in Opcodes.DCONST_0..Opcodes.DCONST_1
+                                ) {
+                                    2
+                                } else {
+                                    1
+                                }
+                        Opcodes.POP -> consumed = 1
+                        Opcodes.POP2 -> consumed = 2
+                        Opcodes.DUP -> {
+                            produced = 1
+                            preservesTrackedValue = true
+                        }
+                        Opcodes.DUP2 -> {
+                            produced = 2
+                            preservesTrackedValue = true
+                        }
+                        in Opcodes.IRETURN..Opcodes.RETURN, Opcodes.ATHROW -> break
+                        else -> break
+                    }
+                }
+                is IntInsnNode -> {
+                    when (instruction.opcode) {
+                        Opcodes.BIPUSH, Opcodes.SIPUSH -> produced = 1
+                        Opcodes.NEWARRAY -> {
+                            consumed = 1
+                            produced = 1
+                        }
+                        else -> break
+                    }
+                }
+                is LdcInsnNode -> {
+                    produced = if (instruction.cst is Long || instruction.cst is Double) 2 else 1
+                }
+                is TypeInsnNode -> {
+                    when (instruction.opcode) {
+                        Opcodes.NEW -> produced = 1
+                        Opcodes.ANEWARRAY -> {
+                            consumed = 1
+                            produced = 1
+                        }
+                        Opcodes.CHECKCAST -> preservesTrackedValue = true
+                        Opcodes.INSTANCEOF -> {
+                            consumed = 1
+                            produced = 1
+                        }
+                        else -> break
+                    }
+                }
+                else -> break
+            }
+            val consumesTrackedValue = !preservesTrackedValue && consumed >= stackSize
+            stackSize += produced - consumed
+            if (consumesTrackedValue || stackSize <= 0) break
+        }
+    }
+
+    private fun Type.internalNameOrNull(): String? =
+        when (sort) {
+            Type.OBJECT -> internalName
+            Type.ARRAY -> descriptor
+            else -> null
+        }
+
+    private fun forwardingConstructor(
+        superName: String,
+        descriptor: String,
+    ): MethodNode {
+        val constructor =
+            MethodNode(
+                Opcodes.ASM9,
+                Opcodes.ACC_PUBLIC or Opcodes.ACC_SYNTHETIC,
+                "<init>",
+                descriptor,
+                null,
+                null,
+            )
+        constructor.visitCode()
+        constructor.visitVarInsn(Opcodes.ALOAD, 0)
+        var local = 1
+        Type.getArgumentTypes(descriptor).forEach { argument ->
+            constructor.visitVarInsn(argument.getOpcode(Opcodes.ILOAD), local)
+            local += argument.size
+        }
+        constructor.visitMethodInsn(
+            Opcodes.INVOKESPECIAL,
+            superName,
+            "<init>",
+            descriptor,
+            false,
+        )
+        constructor.visitInsn(Opcodes.RETURN)
+        constructor.visitMaxs(0, local)
+        constructor.visitEnd()
+        return constructor
+    }
+
+    private data class ClassInfo(
+        val superName: String?,
+        val interfaces: List<String>,
+        val isInterface: Boolean,
+    )
+
+    /**
+     * Resolves extension classes without loading them. ASM needs their real
+     * hierarchy while computing frames; returning Object for every merge can
+     * turn a valid obfuscated local variable into an invalid Object value.
+     */
+    private class ClassHierarchy(
+        classBytes: Iterable<ByteArray>,
+    ) {
+        private val classes: MutableMap<String, ClassInfo> =
+            classBytes
+                .map(::classInfo)
+                .toMap(mutableMapOf())
+
+        fun commonSuperClass(
+            type1: String,
+            type2: String,
+        ): String {
+            if (type1 == type2) return type1
+            if (type1.startsWith("[") || type2.startsWith("[")) {
+                return commonArrayType(type1, type2)
+            }
+            if (isAssignableFrom(type1, type2)) return type1
+            if (isAssignableFrom(type2, type1)) return type2
+            if (resolve(type1)?.isInterface == true || resolve(type2)?.isInterface == true) {
+                return OBJECT
+            }
+
+            var candidate = resolve(type1)?.superName
+            while (candidate != null) {
+                if (isAssignableFrom(candidate, type2)) return candidate
+                candidate = resolve(candidate)?.superName
+            }
+            return OBJECT
+        }
+
+        private fun commonArrayType(
+            type1: String,
+            type2: String,
+        ): String {
+            if (!type1.startsWith("[") || !type2.startsWith("[")) return OBJECT
+            val component1 = type1.substring(1)
+            val component2 = type2.substring(1)
+            if (!component1.isReferenceDescriptor() || !component2.isReferenceDescriptor()) {
+                return OBJECT
+            }
+            return "[" + commonReferenceDescriptor(component1, component2)
+        }
+
+        private fun commonReferenceDescriptor(
+            type1: String,
+            type2: String,
+        ): String {
+            if (type1.startsWith("[") || type2.startsWith("[")) {
+                return if (type1.startsWith("[") && type2.startsWith("[")) {
+                    commonArrayType(type1, type2)
+                } else {
+                    "L$OBJECT;"
+                }
+            }
+            return "L${commonSuperClass(type1.removeSurrounding("L", ";"), type2.removeSurrounding("L", ";"))};"
+        }
+
+        private fun isAssignableFrom(
+            target: String,
+            source: String,
+            visited: MutableSet<String> = mutableSetOf(),
+        ): Boolean {
+            if (target == source || target == OBJECT) return true
+            if (!visited.add(source)) return false
+            val sourceInfo = resolve(source) ?: return false
+            return sourceInfo.interfaces.any { isAssignableFrom(target, it, visited) } ||
+                sourceInfo.superName?.let { isAssignableFrom(target, it, visited) } == true
+        }
+
+        private fun resolve(name: String): ClassInfo? {
+            classes[name]?.let { return it }
+            val resource = "$name.class"
+            val bytes =
+                BytecodeEditor::class.java.classLoader
+                    ?.getResourceAsStream(resource)
+                    ?.use { it.readBytes() }
+                    ?: ClassLoader.getSystemResourceAsStream(resource)?.use { it.readBytes() }
+                    ?: return null
+            return classInfo(bytes).second.also { classes[name] = it }
+        }
+
+        companion object {
+            private const val OBJECT = "java/lang/Object"
+
+            private fun String.isReferenceDescriptor(): Boolean = startsWith("L") || startsWith("[")
+
+            private fun classInfo(bytes: ByteArray): Pair<String, ClassInfo> {
+                val reader = ClassReader(bytes)
+                return reader.className to
+                    ClassInfo(
+                        superName = reader.superName,
+                        interfaces = reader.interfaces.toList(),
+                        isInterface = reader.access and Opcodes.ACC_INTERFACE != 0,
+                    )
+            }
         }
     }
 
@@ -129,7 +558,10 @@ object BytecodeEditor {
      *
      * @return [ByteArray] with modified bytecode
      */
-    private fun transform(pair: Pair<Path, ByteArray>): Pair<Path, ByteArray> {
+    private fun transform(
+        pair: Pair<Path, ByteArray>,
+        hierarchy: ClassHierarchy,
+    ): Pair<Path, ByteArray> {
         // Read the class and prepare to modify it
         val cr = ClassReader(pair.second)
         // dex2jar can emit stale stack-map frames for obfuscated Kotlin default
@@ -140,7 +572,7 @@ object BytecodeEditor {
                 override fun getCommonSuperClass(
                     type1: String,
                     type2: String,
-                ): String = "java/lang/Object"
+                ): String = hierarchy.commonSuperClass(type1, type2)
             }
         // Modify the class
         cr.accept(
