@@ -6,6 +6,7 @@ import okhttp3.Headers
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
+import okhttp3.Protocol
 import okhttp3.Request
 import java.util.UUID
 
@@ -167,7 +168,16 @@ internal object MihonImageProxy {
                     .toBlocking()
                     .single()
         }
-        return entry.source.fetchImage(entry.page).toBlocking().single().use { response ->
+        val request = entry.source.imageRequest(entry.page)
+        val imageClient =
+            entry.source.client
+                .newBuilder()
+                .protocols(listOf(Protocol.HTTP_1_1))
+                .build()
+        return imageClient.newCall(request).execute().use { response ->
+            check(response.isSuccessful) {
+                "Extension image request failed with HTTP ${response.code}"
+            }
             val body = requireNotNull(response.body) { "Extension returned an empty image response" }
             ImageData(
                 bytes = body.bytes(),

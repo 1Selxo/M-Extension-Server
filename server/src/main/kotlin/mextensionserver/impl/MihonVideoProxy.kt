@@ -24,6 +24,7 @@ import java.util.concurrent.TimeUnit
 internal object MihonVideoProxy {
     private const val MAX_ENTRIES = 32768
     private val uriAttribute = Regex("""URI=(["'])(.*?)\1""")
+    private val mediaExtension = Regex("""\.([A-Za-z0-9]{1,8})$""")
 
     data class VideoData(
         val statusCode: Int,
@@ -68,7 +69,7 @@ internal object MihonVideoProxy {
             video.headers
                 ?: runCatching { source.headers }.getOrDefault(Headers.Builder().build())
         val proxiedVideoUrl =
-            video.videoUrl?.let { register(client, it, headers) }
+            video.videoUrl?.let { register(client, it, headers, suffixHint = video.url.mediaFileSuffix()) }
                 ?: video.videoUrl
         return Video(
             url = video.url,
@@ -84,6 +85,7 @@ internal object MihonVideoProxy {
         client: OkHttpClient,
         url: String,
         headers: Headers = Headers.Builder().build(),
+        suffixHint: String? = null,
     ): String? {
         val currentPort = port
         val target = url.toHttpUrlOrNull()
@@ -96,6 +98,8 @@ internal object MihonVideoProxy {
                 append(System.identityHashCode(client))
                 append('\u0000')
                 append(target)
+                append('\u0000')
+                append(suffixHint.orEmpty())
                 headers.forEach { (name, value) ->
                     append('\u0000')
                     append(name)
@@ -122,14 +126,15 @@ internal object MihonVideoProxy {
                     tokensByKey[key] = newToken
                 }
             }
-        return proxyUrl(currentPort, token)
+        return proxyUrl(currentPort, token, target, suffixHint)
     }
 
     fun fetch(
         token: String,
         range: String? = null,
     ): VideoData? {
-        val entry = synchronized(lock) { entriesByToken[token] } ?: return null
+        val registryToken = token.substringBefore('.')
+        val entry = synchronized(lock) { entriesByToken[registryToken] } ?: return null
         val request =
             Request
                 .Builder()
@@ -191,20 +196,38 @@ internal object MihonVideoProxy {
         bytes: ByteArray,
     ): ByteArray {
         val text = bytes.toString(StandardCharsets.UTF_8)
+        val segmentSuffix = if (text.contains("#EXT-X-MAP")) ".m4s" else ".ts"
+        var pendingSegmentUri = false
         val rewritten =
             text
                 .lineSequence()
                 .map { line ->
                     when {
                         line.isBlank() -> line
-                        line.startsWith("#") ->
+                        line.startsWith("#") -> {
+                            if (line.startsWith("#EXTINF")) pendingSegmentUri = true
+                            val suffixHint =
+                                when {
+                                    line.startsWith("#EXT-X-KEY") -> ".key"
+                                    line.startsWith("#EXT-X-MAP") -> ".mp4"
+                                    line.startsWith("#EXT-X-MEDIA") ||
+                                        line.startsWith("#EXT-X-I-FRAME-STREAM-INF") -> ".m3u8"
+                                    else -> null
+                                }
                             uriAttribute.replace(line) { match ->
                                 val quote = match.groupValues[1]
                                 val original = match.groupValues[2]
-                                val proxy = registerResolved(client, baseUrl, original, headers) ?: original
+                                val proxy =
+                                    registerResolved(client, baseUrl, original, headers, suffixHint)
+                                        ?: original
                                 "URI=$quote$proxy$quote"
                             }
-                        else -> registerResolved(client, baseUrl, line.trim(), headers) ?: line
+                        }
+                        else -> {
+                            val suffixHint = if (pendingSegmentUri) segmentSuffix else ".m3u8"
+                            pendingSegmentUri = false
+                            registerResolved(client, baseUrl, line.trim(), headers, suffixHint) ?: line
+                        }
                     }
                 }.joinToString("\n")
         return rewritten.toByteArray(StandardCharsets.UTF_8)
@@ -215,9 +238,10 @@ internal object MihonVideoProxy {
         baseUrl: HttpUrl,
         url: String,
         headers: Headers,
+        suffixHint: String?,
     ): String? {
         val resolved = baseUrl.resolve(url) ?: return null
-        val absoluteProxy = register(client, resolved.toString(), headers) ?: return null
+        val absoluteProxy = register(client, resolved.toString(), headers, suffixHint) ?: return null
         return absoluteProxy.toHttpUrl().encodedPath
     }
 
@@ -241,7 +265,17 @@ internal object MihonVideoProxy {
     private fun proxyUrl(
         currentPort: Int,
         token: String,
-    ): String = "http://127.0.0.1:$currentPort/video/$token"
+        target: HttpUrl,
+        suffixHint: String?,
+    ): String = "http://127.0.0.1:$currentPort/video/$token${target.mediaFileSuffix().ifEmpty { suffixHint.orEmpty() }}"
+
+    private fun String.mediaFileSuffix(): String = toHttpUrlOrNull()?.mediaFileSuffix().orEmpty()
+
+    private fun HttpUrl.mediaFileSuffix(): String {
+        val fileName = pathSegments.lastOrNull().orEmpty()
+        val extension = mediaExtension.find(fileName)?.groupValues?.get(1) ?: return ""
+        return ".${extension.lowercase()}"
+    }
 
     fun clear() {
         synchronized(lock) {

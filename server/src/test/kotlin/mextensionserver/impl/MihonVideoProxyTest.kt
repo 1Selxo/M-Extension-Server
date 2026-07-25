@@ -34,11 +34,12 @@ class MihonVideoProxyTest {
                     seenReferers += request.header("Referer")
                     val body =
                         when (request.url.encodedPath) {
-                            "/master.m3u8" ->
+                            "/master" ->
                                 """#EXTM3U
                                     |#EXT-X-MEDIA:TYPE=AUDIO,URI="audio/list.m3u8"
                                     |#EXT-X-KEY:METHOD=AES-128,URI="https://keys.test/key.bin"
-                                    |segment.ts
+                                    |#EXTINF:6.0,
+                                    |segment
                                 """.trimMargin()
                             "/list.m3u8" -> "#EXTM3U\naudio.aac"
                             else -> "payload"
@@ -62,12 +63,14 @@ class MihonVideoProxyTest {
         val headers = Headers.headersOf("Referer", "https://anime.example/")
         MihonVideoProxy.configure(39642)
 
-        val proxyUrl = assertNotNull(MihonVideoProxy.register(client, "https://video.test/master.m3u8", headers))
+        val proxyUrl = assertNotNull(MihonVideoProxy.register(client, "https://video.test/master", headers, suffixHint = ".m3u8"))
         val manifest = assertNotNull(MihonVideoProxy.fetch(proxyUrl.token())).bytes.decodeToString()
 
         assertTrue(proxyUrl.startsWith("http://127.0.0.1:39642/video/"))
-        assertTrue(manifest.contains("URI=\"/video/"))
-        assertTrue(manifest.lineSequence().any { it.startsWith("/video/") })
+        assertTrue(proxyUrl.endsWith(".m3u8"))
+        assertTrue(manifest.lineSequence().any { it.contains("URI=\"/video/") && it.contains(".m3u8\"") })
+        assertTrue(manifest.lineSequence().any { it.contains("URI=\"/video/") && it.contains(".bin\"") })
+        assertTrue(manifest.lineSequence().any { it.startsWith("/video/") && it.endsWith(".ts") })
         assertFalse(manifest.contains("video.test"))
         assertFalse(manifest.contains("keys.test"))
 
@@ -75,7 +78,7 @@ class MihonVideoProxyTest {
 
         assertTrue(requestedUrls.contains("https://video.test/audio/list.m3u8"))
         assertTrue(requestedUrls.contains("https://keys.test/key.bin"))
-        assertTrue(requestedUrls.contains("https://video.test/segment.ts"))
+        assertTrue(requestedUrls.contains("https://video.test/segment"))
         assertTrue(seenReferers.all { it == "https://anime.example/" })
     }
 
@@ -102,6 +105,7 @@ class MihonVideoProxyTest {
         MihonVideoProxy.configure(39642)
         val proxyUrl = assertNotNull(MihonVideoProxy.register(client, "https://video.test/movie.mp4"))
 
+        assertTrue(proxyUrl.endsWith(".mp4"))
         val response = assertNotNull(MihonVideoProxy.fetch(proxyUrl.token(), "bytes=4-7"))
 
         assertEquals(206, response.statusCode)
@@ -114,7 +118,7 @@ class MihonVideoProxyTest {
     private fun String.token(): String = URI(this).path.substringAfterLast('/')
 
     private fun String.proxyTokens(): Set<String> =
-        Regex("/video/([0-9a-f-]+)")
+        Regex("/video/([0-9a-f-]+\\.[a-z0-9]+)")
             .findAll(this)
             .map { it.groupValues[1] }
             .toSet()
