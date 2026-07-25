@@ -19,6 +19,7 @@ import java.nio.file.FileSystems
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
+import java.util.ArrayDeque
 import kotlin.streams.asSequence
 
 object BytecodeEditor {
@@ -31,13 +32,18 @@ object BytecodeEditor {
      */
     fun fixAndroidClasses(jarFile: Path) {
         FileSystems.newFileSystem(jarFile, null as ClassLoader?)?.use {
-            Files
-                .walk(it.getPath("/"))
+            val classes =
+                Files
+                    .walk(it.getPath("/"))
+                    .asSequence()
+                    .filterNotNull()
+                    .filterNot(Files::isDirectory)
+                    .mapNotNull(::getClassBytes)
+                    .toList()
+            val hierarchy = ClassHierarchy(classes.map(Pair<Path, ByteArray>::second))
+            classes
                 .asSequence()
-                .filterNotNull()
-                .filterNot(Files::isDirectory)
-                .mapNotNull(::getClassBytes)
-                .map(::transform)
+                .map { classFile -> transform(classFile, hierarchy) }
                 .forEach(::write)
         }
     }
@@ -129,23 +135,26 @@ object BytecodeEditor {
      *
      * @return [ByteArray] with modified bytecode
      */
-    private fun transform(pair: Pair<Path, ByteArray>): Pair<Path, ByteArray> {
-        // ASM frame recomputation is not a no-op for dex2jar output. Obfuscated
-        // constructor flows may contain verifier-valid uninitialized-object
-        // frames that cannot be reconstructed without the full Android class
-        // path. Do not rewrite classes outside this rewriter's scope.
-        if (!requiresAndroidClassReplacement(pair.second)) {
-            return pair
-        }
-
+    private fun transform(
+        pair: Pair<Path, ByteArray>,
+        hierarchy: ClassHierarchy,
+    ): Pair<Path, ByteArray> {
         // Read the class and prepare to modify it
         val cr = ClassReader(pair.second)
-        // Preserve dex2jar's stack-map frames. Recompute only max stack/local
-        // sizes, which does not alter constructor initialization state.
-        val cw = ClassWriter(cr, ClassWriter.COMPUTE_MAXS)
+        // dex2jar output can have missing or stale StackMapTable entries. Rebuild
+        // them using actual class hierarchy metadata. Returning Object for every
+        // merge corrupts uninitialized constructor values in obfuscated classes.
+        val cw =
+            object : ClassWriter(cr, ClassWriter.COMPUTE_FRAMES or ClassWriter.COMPUTE_MAXS) {
+                override fun getCommonSuperClass(
+                    type1: String,
+                    type2: String,
+                ): String = hierarchy.commonSuperClass(type1, type2)
+            }
+        val needsConstructor = hierarchy.needsSyntheticConstructor(cr.className)
         // Modify the class
         cr.accept(
-            object : ClassVisitor(Opcodes.ASM5, cw) {
+            object : ClassVisitor(Opcodes.ASM9, cw) {
                 // Modify field descriptor, for example
                 // class MangaYes {
                 //     val format = SimpleDateFormat("YYYY-MM-dd")
@@ -195,24 +204,8 @@ object BytecodeEditor {
                             signature,
                             exceptions,
                         )
-                    return object : MethodVisitor(Opcodes.ASM5, mv) {
-                        override fun visitFrame(
-                            type: Int,
-                            numLocal: Int,
-                            local: Array<out Any>?,
-                            numStack: Int,
-                            stack: Array<out Any>?,
-                        ) {
-                            // Object entries in StackMapTable frames are class
-                            // internal names and must follow descriptor rewrites.
-                            super.visitFrame(
-                                type,
-                                numLocal,
-                                local.replaceFrameTypes(),
-                                numStack,
-                                stack.replaceFrameTypes(),
-                            )
-                        }
+                    return object : MethodVisitor(Opcodes.ASM9, mv) {
+                        private val pendingConstructions = ArrayDeque<String>()
 
                         override fun visitLdcInsn(cst: Any?) {
                             logger.trace { "Ldc" to "${cst?.let { "${it::class.java.simpleName}: $it" }}" }
@@ -228,12 +221,16 @@ object BytecodeEditor {
                             opcode: Int,
                             type: String?,
                         ) {
+                            val replacementType = type.replaceDirectly()
                             logger.trace {
-                                "Type" to "$opcode: ${type.replaceDirectly()}"
+                                "Type" to "$opcode: $replacementType"
+                            }
+                            if (opcode == Opcodes.NEW && replacementType != null) {
+                                pendingConstructions.addLast(replacementType)
                             }
                             super.visitTypeInsn(
                                 opcode,
-                                type.replaceDirectly(),
+                                replacementType,
                             )
                         }
 
@@ -248,12 +245,30 @@ object BytecodeEditor {
                             desc: String?,
                             itf: Boolean,
                         ) {
+                            var replacementOwner = owner.replaceDirectly()
+                            if (opcode == Opcodes.INVOKESPECIAL && name == "<init>" && pendingConstructions.isNotEmpty()) {
+                                val constructedType = pendingConstructions.last()
+                                if (replacementOwner == constructedType) {
+                                    pendingConstructions.removeLast()
+                                } else if (
+                                    desc == "()V" &&
+                                    hierarchy.needsSyntheticConstructor(constructedType) &&
+                                    replacementOwner == hierarchy.superName(constructedType)
+                                ) {
+                                    // dex2jar can emit `new Child` followed by
+                                    // `Object.<init>` and omit Child's trivial
+                                    // constructor. That is legal in DEX but not
+                                    // in JVM bytecode.
+                                    replacementOwner = constructedType
+                                    pendingConstructions.removeLast()
+                                }
+                            }
                             logger.trace {
-                                "Method" to "$opcode: ${owner.replaceDirectly()}: $name: ${desc.replaceIndirectly()}"
+                                "Method" to "$opcode: $replacementOwner: $name: ${desc.replaceIndirectly()}"
                             }
                             super.visitMethodInsn(
                                 opcode,
-                                owner.replaceDirectly(),
+                                replacementOwner,
                                 name,
                                 desc.replaceIndirectly(),
                                 itf,
@@ -286,38 +301,30 @@ object BytecodeEditor {
                         }
                     }
                 }
+
+                override fun visitEnd() {
+                    if (needsConstructor) {
+                        visitMethod(Opcodes.ACC_PUBLIC, "<init>", "()V", null, null)?.apply {
+                            visitCode()
+                            visitVarInsn(Opcodes.ALOAD, 0)
+                            visitMethodInsn(
+                                Opcodes.INVOKESPECIAL,
+                                hierarchy.superName(cr.className),
+                                "<init>",
+                                "()V",
+                                false,
+                            )
+                            visitInsn(Opcodes.RETURN)
+                            visitMaxs(0, 0)
+                            visitEnd()
+                        }
+                    }
+                    super.visitEnd()
+                }
             },
-            0,
+            ClassReader.SKIP_FRAMES,
         )
         return pair.first to cw.toByteArray()
-    }
-
-    private fun Array<out Any>?.replaceFrameTypes(): Array<Any?>? =
-        this
-            ?.map { value ->
-                if (value is String) {
-                    value.replaceDirectly()
-                } else {
-                    value
-                }
-            }?.toTypedArray()
-
-    internal fun requiresAndroidClassReplacement(classBytes: ByteArray): Boolean =
-        classesToReplace.any { className ->
-            classBytes.containsBytes(className.toByteArray(Charsets.UTF_8))
-        }
-
-    private fun ByteArray.containsBytes(needle: ByteArray): Boolean {
-        if (needle.isEmpty()) return true
-        if (needle.size > size) return false
-
-        for (start in 0..size - needle.size) {
-            for (offset in needle.indices) {
-                if (this[start + offset] != needle[offset]) break
-                if (offset == needle.lastIndex) return true
-            }
-        }
-        return false
     }
 
     private fun write(pair: Pair<Path, ByteArray>) {
@@ -327,5 +334,129 @@ object BytecodeEditor {
             StandardOpenOption.CREATE,
             StandardOpenOption.TRUNCATE_EXISTING,
         )
+    }
+
+    private data class ClassInfo(
+        val superName: String?,
+        val interfaces: List<String>,
+        val isInterface: Boolean,
+        val hasConstructor: Boolean,
+    )
+
+    /**
+     * Resolves hierarchy information from class bytes instead of loading classes.
+     * Loading dex2jar output would itself trigger verification before it is fixed.
+     */
+    private class ClassHierarchy(
+        classBytes: List<ByteArray>,
+    ) {
+        private val classes = mutableMapOf<String, ClassInfo?>()
+        private val classLoader = BytecodeEditor::class.java.classLoader
+
+        init {
+            classBytes.forEach { bytes ->
+                val reader = ClassReader(bytes)
+                classes[reader.className] = reader.toClassInfo()
+            }
+        }
+
+        fun commonSuperClass(
+            type1: String,
+            type2: String,
+        ): String {
+            if (type1 == type2) return type1
+            if (type1.startsWith("[") || type2.startsWith("[")) {
+                return commonArrayType(type1, type2)
+            }
+            if (isAssignableFrom(type1, type2)) return type1
+            if (isAssignableFrom(type2, type1)) return type2
+            if (classInfo(type1)?.isInterface == true || classInfo(type2)?.isInterface == true) {
+                return OBJECT
+            }
+
+            var current = classInfo(type1)?.superName
+            while (current != null) {
+                if (isAssignableFrom(current, type2)) return current
+                current = classInfo(current)?.superName
+            }
+            return OBJECT
+        }
+
+        fun superName(name: String): String? = classInfo(name)?.superName
+
+        fun needsSyntheticConstructor(name: String): Boolean {
+            val info = classInfo(name) ?: return false
+            return !info.isInterface && !info.hasConstructor && info.superName == OBJECT
+        }
+
+        private fun commonArrayType(
+            type1: String,
+            type2: String,
+        ): String {
+            if (!type1.startsWith("[") || !type2.startsWith("[")) return OBJECT
+            if (type1 == type2) return type1
+
+            val element1 = type1.removePrefix("[")
+            val element2 = type2.removePrefix("[")
+            if (!element1.startsWith("L") || !element2.startsWith("L")) return OBJECT
+
+            val common =
+                commonSuperClass(
+                    element1.removeSurrounding("L", ";"),
+                    element2.removeSurrounding("L", ";"),
+                )
+            return "[L$common;"
+        }
+
+        private fun isAssignableFrom(
+            target: String,
+            source: String,
+            visited: MutableSet<String> = mutableSetOf(),
+        ): Boolean {
+            if (target == source || target == OBJECT) return true
+            if (!visited.add(source)) return false
+            val sourceInfo = classInfo(source) ?: return false
+            return sourceInfo.superName?.let { isAssignableFrom(target, it, visited) } == true ||
+                sourceInfo.interfaces.any { isAssignableFrom(target, it, visited) }
+        }
+
+        private fun classInfo(name: String): ClassInfo? {
+            if (classes.containsKey(name)) return classes[name]
+            val info =
+                classLoader
+                    .getResourceAsStream("$name.class")
+                    ?.use { ClassReader(it).toClassInfo() }
+            classes[name] = info
+            return info
+        }
+
+        private fun ClassReader.toClassInfo(): ClassInfo {
+            var hasConstructor = false
+            accept(
+                object : ClassVisitor(Opcodes.ASM9) {
+                    override fun visitMethod(
+                        access: Int,
+                        name: String?,
+                        descriptor: String?,
+                        signature: String?,
+                        exceptions: Array<out String>?,
+                    ): MethodVisitor? {
+                        if (name == "<init>") hasConstructor = true
+                        return null
+                    }
+                },
+                ClassReader.SKIP_CODE or ClassReader.SKIP_DEBUG or ClassReader.SKIP_FRAMES,
+            )
+            return ClassInfo(
+                superName = superName,
+                interfaces = interfaces.toList(),
+                isInterface = access and Opcodes.ACC_INTERFACE != 0,
+                hasConstructor = hasConstructor,
+            )
+        }
+
+        private companion object {
+            const val OBJECT = "java/lang/Object"
+        }
     }
 }
