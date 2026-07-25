@@ -18,6 +18,7 @@ import org.objectweb.asm.Opcodes
 import org.objectweb.asm.Type
 import org.objectweb.asm.tree.ClassNode
 import org.objectweb.asm.tree.FieldInsnNode
+import org.objectweb.asm.tree.MethodInsnNode
 import org.objectweb.asm.tree.TypeInsnNode
 import org.objectweb.asm.tree.analysis.Analyzer
 import org.objectweb.asm.tree.analysis.SourceInterpreter
@@ -157,7 +158,7 @@ object BytecodeEditor {
         // them using actual class hierarchy metadata. Returning Object for every
         // merge corrupts uninitialized constructor values in obfuscated classes.
         val cw =
-            object : ClassWriter(cr, ClassWriter.COMPUTE_FRAMES or ClassWriter.COMPUTE_MAXS) {
+            object : ClassWriter(ClassWriter.COMPUTE_FRAMES or ClassWriter.COMPUTE_MAXS) {
                 override fun getCommonSuperClass(
                     type1: String,
                     type2: String,
@@ -216,6 +217,7 @@ object BytecodeEditor {
                             signature,
                             exceptions,
                         )
+                    val methodName = name
                     return object : MethodVisitor(Opcodes.ASM9, mv) {
                         private val pendingConstructions = ArrayDeque<String>()
 
@@ -233,15 +235,7 @@ object BytecodeEditor {
                             opcode: Int,
                             type: String?,
                         ) {
-                            var replacementType = type.replaceDirectly()
-                            if (
-                                opcode == Opcodes.NEW &&
-                                name == "<clinit>" &&
-                                replacementType != null &&
-                                hierarchy.shouldInstantiateSubclass(cr.className, replacementType)
-                            ) {
-                                replacementType = cr.className
-                            }
+                            val replacementType = type.replaceDirectly()
                             logger.trace {
                                 "Type" to "$opcode: $replacementType"
                             }
@@ -266,14 +260,26 @@ object BytecodeEditor {
                             itf: Boolean,
                         ) {
                             var replacementOwner = owner.replaceDirectly()
+                            if (
+                                methodName == "<init>" &&
+                                name == "<init>" &&
+                                desc != null &&
+                                pendingConstructions.isEmpty() &&
+                                hierarchy.needsSuperConstructorRedirect(cr.className, desc) &&
+                                replacementOwner != cr.className &&
+                                replacementOwner != cr.superName
+                            ) {
+                                replacementOwner = cr.superName
+                            }
                             if (opcode == Opcodes.INVOKESPECIAL && name == "<init>" && pendingConstructions.isNotEmpty()) {
                                 val constructedType = pendingConstructions.last()
                                 if (replacementOwner == constructedType) {
                                     pendingConstructions.removeLast()
                                 } else if (
                                     desc != null &&
-                                    hierarchy.needsSyntheticConstructor(constructedType, desc) &&
-                                    replacementOwner == hierarchy.superName(constructedType)
+                                    hierarchy.needsConstructorRedirect(constructedType, desc) &&
+                                    replacementOwner != null &&
+                                    hierarchy.isAncestor(replacementOwner, constructedType)
                                 ) {
                                     // dex2jar can emit `new Child` followed by
                                     // `Object.<init>` and omit Child's trivial
@@ -365,7 +371,8 @@ object BytecodeEditor {
         val superName: String?,
         val interfaces: List<String>,
         val isInterface: Boolean,
-        val hasConstructor: Boolean,
+        val isAbstract: Boolean,
+        val constructors: Set<String>,
     )
 
     /**
@@ -376,14 +383,27 @@ object BytecodeEditor {
         classBytes: List<ByteArray>,
     ) {
         private val classes = mutableMapOf<String, ClassInfo?>()
+        private val bytecode = mutableMapOf<String, ByteArray>()
+        private val lazyValueTypes = mutableMapOf<String, String>()
+        private val functionReturnTypes = mutableMapOf<String, String?>()
+        private val methodDescriptorRedirects = mutableMapOf<String, String>()
         private val syntheticConstructors = mutableMapOf<String, MutableSet<String>>()
+        private val constructorRedirects = mutableMapOf<String, MutableSet<String>>()
+        private val superConstructorRedirects = mutableMapOf<String, MutableSet<String>>()
+        private val claimedErasedCandidates = mutableSetOf<String>()
         private val classLoader = BytecodeEditor::class.java.classLoader
 
         init {
             classBytes.forEach { bytes ->
                 val reader = ClassReader(bytes)
                 classes[reader.className] = reader.toClassInfo()
+                bytecode[reader.className] = bytes
             }
+            classBytes.forEach(::findReturnTypeRedirects)
+            repeat(3) {
+                classBytes.forEach(::findArgumentTypeRedirects)
+            }
+            classBytes.forEach(::collectLazyValueTypes)
         }
 
         fun findSyntheticConstructors(classBytes: List<ByteArray>) {
@@ -416,17 +436,20 @@ object BytecodeEditor {
 
         fun syntheticConstructors(name: String): Set<String> = syntheticConstructors[name].orEmpty()
 
-        fun needsSyntheticConstructor(
+        fun needsConstructorRedirect(
             name: String,
             descriptor: String,
-        ): Boolean = descriptor in syntheticConstructors(name)
+        ): Boolean = descriptor in constructorRedirects[name].orEmpty()
 
-        fun shouldInstantiateSubclass(
-            className: String,
-            instantiatedType: String,
-        ): Boolean =
-            syntheticConstructors(className).isNotEmpty() &&
-                instantiatedType == superName(className)
+        fun needsSuperConstructorRedirect(
+            name: String,
+            descriptor: String,
+        ): Boolean = descriptor in superConstructorRedirects[name].orEmpty()
+
+        fun isAncestor(
+            target: String,
+            source: String,
+        ): Boolean = isAssignableFrom(target, source)
 
         private fun commonArrayType(
             type1: String,
@@ -475,6 +498,70 @@ object BytecodeEditor {
             var changed = false
 
             node.methods.forEach { method ->
+                methodDescriptorRedirects[methodKey(node.name, method.name, method.desc)]?.let {
+                    method.desc = it
+                    changed = true
+                }
+                method.instructions
+                    .toArray()
+                    .filterIsInstance<MethodInsnNode>()
+                    .forEach { invocation ->
+                        methodDescriptorRedirects[
+                            methodKey(invocation.owner, invocation.name, invocation.desc),
+                        ]?.let {
+                            invocation.desc = it
+                            changed = true
+                        }
+                    }
+            }
+
+            node.methods.forEach { method ->
+                val narrowedTypes =
+                    method.instructions
+                        .toArray()
+                        .filterIsInstance<TypeInsnNode>()
+                        .filter { it.opcode == Opcodes.INSTANCEOF }
+                        .map(TypeInsnNode::desc)
+                        .toSet()
+                method.instructions
+                    .toArray()
+                    .filterIsInstance<FieldInsnNode>()
+                    .filter { it.opcode == Opcodes.GETFIELD && it.owner in narrowedTypes }
+                    .forEach { field ->
+                        method.instructions.insertBefore(field, TypeInsnNode(Opcodes.CHECKCAST, field.owner))
+                        changed = true
+                    }
+
+                if (narrowedTypes.isNotEmpty()) {
+                    method.instructions
+                        .toArray()
+                        .filterIsInstance<FieldInsnNode>()
+                        .filter { it.opcode == Opcodes.PUTFIELD && it.owner in narrowedTypes }
+                        .forEach { field ->
+                            val valueType = Type.getType(field.desc)
+                            val valueLocal = method.maxLocals
+                            method.maxLocals += valueType.size
+                            val castReceiver =
+                                org.objectweb.asm.tree.InsnList().apply {
+                                    add(
+                                        org.objectweb.asm.tree.VarInsnNode(
+                                            valueType.getOpcode(Opcodes.ISTORE),
+                                            valueLocal,
+                                        ),
+                                    )
+                                    add(TypeInsnNode(Opcodes.CHECKCAST, field.owner))
+                                    add(
+                                        org.objectweb.asm.tree.VarInsnNode(
+                                            valueType.getOpcode(Opcodes.ILOAD),
+                                            valueLocal,
+                                        ),
+                                    )
+                                }
+                            method.instructions.insertBefore(field, castReceiver)
+                            changed = true
+                        }
+                }
+
                 val frames =
                     runCatching {
                         Analyzer(
@@ -487,20 +574,91 @@ object BytecodeEditor {
                         ).analyze(node.name, method)
                     }.getOrNull() ?: return@forEach
 
+                repairAbstractArrayAllocations(method.instructions.toArray(), frames).also {
+                    changed = changed || it
+                }
+
                 method.instructions.toArray().forEachIndexed { index, instruction ->
-                    val field = instruction as? FieldInsnNode ?: return@forEachIndexed
                     val frame = frames[index] ?: return@forEachIndexed
-                    when (field.opcode) {
-                        Opcodes.PUTFIELD -> {
-                            repairAllocation(frame.getStack(frame.stackSize - 2), field.owner).also {
-                                changed = changed || it
+                    when (instruction) {
+                        is FieldInsnNode ->
+                            when (instruction.opcode) {
+                                Opcodes.PUTFIELD -> {
+                                    repairAllocation(
+                                        frame.getStack(frame.stackSize - 2),
+                                        instruction.owner,
+                                    ).also {
+                                        changed = changed || it
+                                    }
+                                    val expectedType = Type.getType(instruction.desc)
+                                    if (expectedType.sort == Type.OBJECT) {
+                                        repairAllocation(
+                                            frame.getStack(frame.stackSize - 1),
+                                            expectedType.internalName,
+                                        ).also {
+                                            changed = changed || it
+                                        }
+                                    }
+                                }
+                                Opcodes.PUTSTATIC -> {
+                                    val expectedType = Type.getType(instruction.desc)
+                                    if (expectedType.sort == Type.OBJECT) {
+                                        repairAllocation(
+                                            frame.getStack(frame.stackSize - 1),
+                                            expectedType.internalName,
+                                        ).also {
+                                            changed = changed || it
+                                        }
+                                    }
+                                }
+                            }
+
+                        is MethodInsnNode -> {
+                            var stackIndex = frame.stackSize
+                            Type.getArgumentTypes(instruction.desc).reversed().forEach { argument ->
+                                stackIndex--
+                                if (argument.sort == Type.OBJECT) {
+                                    val expectedReturnType =
+                                        if (
+                                            argument.internalName == "kotlin/jvm/functions/Function0" &&
+                                            instruction.owner == "kotlin/LazyKt"
+                                        ) {
+                                            instruction.lazyDestination()?.let(lazyValueTypes::get)
+                                        } else {
+                                            null
+                                        }
+                                    repairAllocation(
+                                        frame.getStack(stackIndex),
+                                        argument.internalName,
+                                        expectedReturnType,
+                                    ).also {
+                                        changed = changed || it
+                                    }
+                                }
+                            }
+                            if (instruction.opcode != Opcodes.INVOKESTATIC) {
+                                stackIndex--
+                                repairAllocation(frame.getStack(stackIndex), instruction.owner).also {
+                                    changed = changed || it
+                                }
                             }
                         }
-                        Opcodes.PUTSTATIC -> {
-                            val expectedType = Type.getType(field.desc)
-                            if (expectedType.sort == Type.OBJECT) {
-                                repairAllocation(frame.getStack(frame.stackSize - 1), expectedType.internalName).also {
-                                    changed = changed || it
+
+                        else -> {
+                            if (instruction.opcode == Opcodes.AASTORE) {
+                                val arrayValue = frame.getStack(frame.stackSize - 3)
+                                val elementType =
+                                    arrayValue.insns
+                                        .filterIsInstance<TypeInsnNode>()
+                                        .singleOrNull { it.opcode == Opcodes.ANEWARRAY }
+                                        ?.desc
+                                if (elementType != null) {
+                                    repairAllocation(
+                                        frame.getStack(frame.stackSize - 1),
+                                        elementType,
+                                    ).also {
+                                        changed = changed || it
+                                    }
                                 }
                             }
                         }
@@ -512,22 +670,369 @@ object BytecodeEditor {
             return ClassWriter(0).also(node::accept).toByteArray()
         }
 
+        private fun repairAbstractArrayAllocations(
+            instructions: Array<org.objectweb.asm.tree.AbstractInsnNode>,
+            frames: Array<org.objectweb.asm.tree.analysis.Frame<SourceValue>?>,
+        ): Boolean {
+            data class ArrayAllocations(
+                val elementType: String,
+                val allocations: MutableList<TypeInsnNode> = mutableListOf(),
+            )
+
+            val arrays = linkedMapOf<TypeInsnNode, ArrayAllocations>()
+            instructions.forEachIndexed { index, instruction ->
+                if (instruction.opcode != Opcodes.AASTORE) return@forEachIndexed
+                val frame = frames[index] ?: return@forEachIndexed
+                val array =
+                    frame
+                        .getStack(frame.stackSize - 3)
+                        .insns
+                        .filterIsInstance<TypeInsnNode>()
+                        .singleOrNull { it.opcode == Opcodes.ANEWARRAY }
+                        ?: return@forEachIndexed
+                val allocation =
+                    frame
+                        .getStack(frame.stackSize - 1)
+                        .insns
+                        .filterIsInstance<TypeInsnNode>()
+                        .singleOrNull { it.opcode == Opcodes.NEW && it.desc == array.desc }
+                        ?: return@forEachIndexed
+                arrays.getOrPut(array) { ArrayAllocations(array.desc) }.allocations.add(allocation)
+            }
+
+            var changed = false
+            arrays.values.forEach { array ->
+                val elementInfo = classInfo(array.elementType) ?: return@forEach
+                if (!elementInfo.isInterface && !elementInfo.isAbstract) return@forEach
+
+                val allocations = array.allocations.distinct()
+                val candidates =
+                    classes
+                        .mapNotNull { (name, info) ->
+                            name.takeIf {
+                                info != null &&
+                                    !info.isInterface &&
+                                    !info.isAbstract &&
+                                    info.superName == array.elementType &&
+                                    isAssignableFrom(array.elementType, name)
+                            }
+                        }
+                // Multi-source extension factories may be translated as an array
+                // containing repeated allocations of their abstract source base.
+                // Only restore the concrete types when the factory has a complete
+                // one-to-one set, so no ambiguous allocation is guessed.
+                if (allocations.size > 1 && allocations.size == candidates.size) {
+                    allocations.zip(candidates).forEach { (allocation, candidate) ->
+                        allocation.desc = candidate
+                    }
+                    changed = true
+                }
+            }
+            return changed
+        }
+
         private fun repairAllocation(
             value: SourceValue,
             expectedType: String,
+            expectedReturnType: String? = null,
         ): Boolean {
             val expectedInfo = classInfo(expectedType) ?: return false
-            if (expectedInfo.isInterface || expectedInfo.hasConstructor) return false
 
             var changed = false
-            value.insns
-                .filterIsInstance<TypeInsnNode>()
-                .filter { it.opcode == Opcodes.NEW && it.desc == expectedInfo.superName }
-                .forEach {
-                    it.desc = expectedType
+            val allocations =
+                value.insns
+                    .filterIsInstance<TypeInsnNode>()
+                    .filter { it.opcode == Opcodes.NEW }
+                    .distinct()
+            // A merged source value can represent different allocations from
+            // separate control-flow branches. Mutating all of them to the type
+            // required by just one branch swaps otherwise valid concrete types.
+            if (allocations.size != 1) return false
+            allocations.forEach { allocation ->
+                val replacementType =
+                    if (!expectedInfo.isInterface && !expectedInfo.isAbstract) {
+                        expectedType.takeIf {
+                            allocation.desc == expectedInfo.superName ||
+                                (
+                                    allocation.desc != expectedType &&
+                                        classInfo(allocation.desc)?.superName == expectedInfo.superName
+                                )
+                        }
+                    } else {
+                        val candidates =
+                            classes
+                                .toList()
+                                .asSequence()
+                                .mapNotNull { (name, info) -> name to (info ?: return@mapNotNull null) }
+                                .filter { (_, info) ->
+                                    !info.isInterface &&
+                                        !info.isAbstract
+                                }.map { (name, _) -> name }
+                                .filter { candidate -> isAssignableFrom(allocation.desc, candidate) }
+                                .filter { candidate -> isAssignableFrom(expectedType, candidate) }
+                                .toList()
+                        val descriptor = allocation.constructorDescriptor()
+                        val compatibleCandidates =
+                            descriptor
+                                ?.let {
+                                    candidates.filter { candidate ->
+                                        classInfo(candidate)?.constructors.orEmpty().let { constructors ->
+                                            constructors.isEmpty() || descriptor in constructors
+                                        }
+                                    }
+                                }.orEmpty()
+                        val returnCompatibleCandidates =
+                            expectedReturnType
+                                ?.let { returnType ->
+                                    compatibleCandidates.filter { candidate ->
+                                        inferredFunctionReturnType(candidate)?.let {
+                                            isAssignableFrom(returnType, it)
+                                        } == true
+                                    }
+                                }.orEmpty()
+                        (
+                            candidates.singleOrNull()
+                                ?: compatibleCandidates.singleOrNull()
+                                ?: returnCompatibleCandidates.singleOrNull()
+                                ?: compatibleCandidates
+                                    .takeIf {
+                                        it.isNotEmpty() &&
+                                            !isAssignableFrom("java/lang/Enum", expectedType) &&
+                                            it.all { candidate -> classInfo(candidate)?.constructors?.isEmpty() == true }
+                                    }?.firstOrNull { it !in claimedErasedCandidates }
+                        )?.also(claimedErasedCandidates::add)
+                    }
+                if (replacementType != null) {
+                    allocation.desc = replacementType
                     changed = true
                 }
+            }
             return changed
+        }
+
+        private fun MethodInsnNode.lazyDestination(): String? {
+            var instruction = next
+            while (instruction != null) {
+                if (instruction is FieldInsnNode && instruction.opcode in listOf(Opcodes.PUTFIELD, Opcodes.PUTSTATIC)) {
+                    return "${instruction.owner}.${instruction.name}"
+                }
+                if (
+                    instruction is MethodInsnNode ||
+                    instruction.opcode in listOf(Opcodes.ARETURN, Opcodes.RETURN)
+                ) {
+                    return null
+                }
+                instruction = instruction.next
+            }
+            return null
+        }
+
+        private fun collectLazyValueTypes(bytes: ByteArray) {
+            val node = ClassNode(Opcodes.ASM9)
+            ClassReader(bytes).accept(node, 0)
+            node.methods.forEach { method ->
+                val frames =
+                    runCatching {
+                        Analyzer(sourceInterpreter()).analyze(node.name, method)
+                    }.getOrNull() ?: return@forEach
+                method.instructions.toArray().forEachIndexed { index, instruction ->
+                    if (
+                        instruction !is MethodInsnNode ||
+                        instruction.owner != "kotlin/Lazy" ||
+                        instruction.name != "getValue"
+                    ) {
+                        return@forEachIndexed
+                    }
+                    val frame = frames[index] ?: return@forEachIndexed
+                    val field =
+                        frame
+                            .getStack(frame.stackSize - 1)
+                            .insns
+                            .filterIsInstance<FieldInsnNode>()
+                            .singleOrNull()
+                            ?: return@forEachIndexed
+                    var next = instruction.next
+                    while (next != null && next.opcode < 0) next = next.next
+                    val cast = next as? TypeInsnNode
+                    if (cast?.opcode == Opcodes.CHECKCAST) {
+                        lazyValueTypes["${field.owner}.${field.name}"] = cast.desc
+                    }
+                }
+            }
+        }
+
+        private fun findReturnTypeRedirects(bytes: ByteArray) {
+            val node = ClassNode(Opcodes.ASM9)
+            ClassReader(bytes).accept(node, 0)
+            node.methods.forEach { method ->
+                val declaredReturn = Type.getReturnType(method.desc)
+                if (declaredReturn.sort != Type.OBJECT) return@forEach
+                val frames =
+                    runCatching {
+                        Analyzer(sourceInterpreter()).analyze(node.name, method)
+                    }.getOrNull() ?: return@forEach
+                val actualTypes =
+                    method.instructions
+                        .toArray()
+                        .mapIndexedNotNull { index, instruction ->
+                            if (instruction.opcode != Opcodes.ARETURN) return@mapIndexedNotNull null
+                            val frame = frames[index] ?: return@mapIndexedNotNull null
+                            inferredSourceType(frame.getStack(frame.stackSize - 1))
+                        }.distinct()
+                if (
+                    actualTypes.isEmpty() ||
+                    actualTypes.all { isAssignableFrom(declaredReturn.internalName, it) }
+                ) {
+                    return@forEach
+                }
+                val commonType = actualTypes.reduce(::commonSuperClass)
+                if (commonType == OBJECT && declaredReturn.internalName != OBJECT) return@forEach
+                val redirectedDescriptor =
+                    Type.getMethodDescriptor(
+                        Type.getObjectType(commonType),
+                        *Type.getArgumentTypes(method.desc),
+                    )
+                methodDescriptorRedirects[methodKey(node.name, method.name, method.desc)] = redirectedDescriptor
+            }
+        }
+
+        private fun findArgumentTypeRedirects(bytes: ByteArray) {
+            val node = ClassNode(Opcodes.ASM9)
+            ClassReader(bytes).accept(node, 0)
+            node.methods.forEach { method ->
+                val frames =
+                    runCatching {
+                        Analyzer(sourceInterpreter()).analyze(node.name, method)
+                    }.getOrNull() ?: return@forEach
+                method.instructions.toArray().forEachIndexed { index, instruction ->
+                    val invocation = instruction as? MethodInsnNode ?: return@forEachIndexed
+                    if (!classes.containsKey(invocation.owner)) return@forEachIndexed
+                    val originalKey = methodKey(invocation.owner, invocation.name, invocation.desc)
+                    val currentDescriptor = methodDescriptorRedirects[originalKey] ?: invocation.desc
+                    val arguments = Type.getArgumentTypes(currentDescriptor)
+                    val frame = frames[index] ?: return@forEachIndexed
+                    var stackIndex = frame.stackSize
+                    var changed = false
+                    val widenedArguments = arguments.copyOf()
+                    arguments.indices.reversed().forEach { argumentIndex ->
+                        stackIndex--
+                        val expected = arguments[argumentIndex]
+                        if (expected.sort != Type.OBJECT) return@forEach
+                        val actual = inferredSourceType(frame.getStack(stackIndex)) ?: return@forEach
+                        if (!isAssignableFrom(expected.internalName, actual)) {
+                            val common = commonSuperClass(expected.internalName, actual)
+                            if (common != OBJECT) {
+                                widenedArguments[argumentIndex] = Type.getObjectType(common)
+                                changed = true
+                            }
+                        }
+                    }
+                    if (changed) {
+                        methodDescriptorRedirects[originalKey] =
+                            Type.getMethodDescriptor(
+                                Type.getReturnType(currentDescriptor),
+                                *widenedArguments,
+                            )
+                    }
+                }
+            }
+        }
+
+        private fun inferredSourceType(value: SourceValue): String? =
+            value.insns
+                .mapNotNull { producer ->
+                    when (producer) {
+                        is TypeInsnNode ->
+                            producer.desc.takeIf { producer.opcode == Opcodes.NEW }
+                        is MethodInsnNode ->
+                            Type
+                                .getReturnType(
+                                    methodDescriptorRedirects[
+                                        methodKey(producer.owner, producer.name, producer.desc),
+                                    ] ?: producer.desc,
+                                ).takeIf { it.sort == Type.OBJECT }
+                                ?.internalName
+                        is FieldInsnNode ->
+                            Type
+                                .getType(producer.desc)
+                                .takeIf { it.sort == Type.OBJECT }
+                                ?.internalName
+                        else -> null
+                    }
+                }.distinct()
+                .reduceOrNull(::commonSuperClass)
+
+        private fun methodKey(
+            owner: String,
+            name: String,
+            descriptor: String,
+        ): String = "$owner.$name$descriptor"
+
+        private fun inferredFunctionReturnType(className: String): String? =
+            functionReturnTypes.getOrPut(className) {
+                val bytes = bytecode[className] ?: return@getOrPut null
+                val node = ClassNode(Opcodes.ASM9)
+                ClassReader(bytes).accept(node, 0)
+                val method =
+                    node.methods.singleOrNull {
+                        it.name == "invoke" && it.desc == "()Ljava/lang/Object;"
+                    } ?: return@getOrPut null
+                val frames =
+                    runCatching {
+                        Analyzer(sourceInterpreter()).analyze(node.name, method)
+                    }.getOrNull() ?: return@getOrPut null
+                val returnTypes =
+                    method.instructions
+                        .toArray()
+                        .mapIndexedNotNull { index, instruction ->
+                            if (instruction.opcode != Opcodes.ARETURN) return@mapIndexedNotNull null
+                            val frame = frames[index] ?: return@mapIndexedNotNull null
+                            frame
+                                .getStack(frame.stackSize - 1)
+                                .insns
+                                .mapNotNull { producer ->
+                                    when (producer) {
+                                        is TypeInsnNode ->
+                                            producer.desc.takeIf { producer.opcode == Opcodes.NEW }
+                                        is MethodInsnNode ->
+                                            Type
+                                                .getReturnType(producer.desc)
+                                                .takeIf { it.sort == Type.OBJECT }
+                                                ?.internalName
+                                        is FieldInsnNode ->
+                                            Type
+                                                .getType(producer.desc)
+                                                .takeIf { it.sort == Type.OBJECT }
+                                                ?.internalName
+                                        else -> null
+                                    }
+                                }.singleOrNull()
+                        }.distinct()
+                returnTypes.singleOrNull()
+            }
+
+        private fun sourceInterpreter() =
+            object : SourceInterpreter(Opcodes.ASM9) {
+                override fun copyOperation(
+                    instruction: org.objectweb.asm.tree.AbstractInsnNode,
+                    value: SourceValue,
+                ): SourceValue = value
+            }
+
+        private fun TypeInsnNode.constructorDescriptor(): String? {
+            var instruction = next
+            while (instruction != null) {
+                if (
+                    instruction is MethodInsnNode &&
+                    instruction.opcode == Opcodes.INVOKESPECIAL &&
+                    instruction.name == "<init>" &&
+                    instruction.owner == desc
+                ) {
+                    return instruction.desc
+                }
+                instruction = instruction.next
+            }
+            return null
         }
 
         private fun findSyntheticConstructors(bytes: ByteArray) {
@@ -541,8 +1046,9 @@ object BytecodeEditor {
                         descriptor: String?,
                         signature: String?,
                         exceptions: Array<out String>?,
-                    ): MethodVisitor =
-                        object : MethodVisitor(Opcodes.ASM9) {
+                    ): MethodVisitor {
+                        val methodName = name
+                        return object : MethodVisitor(Opcodes.ASM9) {
                             private val pendingConstructions = ArrayDeque<String>()
 
                             override fun visitTypeInsn(
@@ -550,17 +1056,7 @@ object BytecodeEditor {
                                 type: String?,
                             ) {
                                 if (opcode == Opcodes.NEW && type != null) {
-                                    val replacementType = type.replaceDirectly()
-                                    val info = classInfo(currentClass)
-                                    if (
-                                        name == "<clinit>" &&
-                                        info?.hasConstructor == false &&
-                                        replacementType == info?.superName
-                                    ) {
-                                        pendingConstructions.addLast(currentClass)
-                                    } else {
-                                        pendingConstructions.addLast(replacementType)
-                                    }
+                                    pendingConstructions.addLast(type.replaceDirectly())
                                 }
                             }
 
@@ -572,6 +1068,29 @@ object BytecodeEditor {
                                 isInterface: Boolean,
                             ) {
                                 if (
+                                    methodName == "<init>" &&
+                                    name == "<init>" &&
+                                    descriptor != null &&
+                                    pendingConstructions.isEmpty()
+                                ) {
+                                    val directSuper = classInfo(currentClass)?.superName
+                                    if (
+                                        directSuper != null &&
+                                        owner != currentClass &&
+                                        owner != directSuper
+                                    ) {
+                                        superConstructorRedirects
+                                            .getOrPut(currentClass, ::mutableSetOf)
+                                            .add(descriptor)
+                                        val superInfo = classInfo(directSuper)
+                                        if (superInfo != null && descriptor !in superInfo.constructors) {
+                                            syntheticConstructors
+                                                .getOrPut(directSuper, ::mutableSetOf)
+                                                .add(descriptor)
+                                        }
+                                    }
+                                }
+                                if (
                                     opcode != Opcodes.INVOKESPECIAL ||
                                     name != "<init>" ||
                                     descriptor == null ||
@@ -581,7 +1100,7 @@ object BytecodeEditor {
                                 }
 
                                 val constructedType = pendingConstructions.last()
-                                val replacementOwner = owner.replaceDirectly()
+                                val replacementOwner = owner.replaceDirectly() ?: return
                                 if (replacementOwner == constructedType) {
                                     pendingConstructions.removeLast()
                                     return
@@ -590,23 +1109,41 @@ object BytecodeEditor {
                                 val info = classInfo(constructedType) ?: return
                                 if (
                                     !info.isInterface &&
-                                    !info.hasConstructor &&
-                                    replacementOwner == info.superName
+                                    isAssignableFrom(replacementOwner, constructedType)
                                 ) {
-                                    syntheticConstructors
+                                    constructorRedirects
                                         .getOrPut(constructedType, ::mutableSetOf)
                                         .add(descriptor)
+                                    addForwardingConstructors(constructedType, replacementOwner, descriptor)
                                     pendingConstructions.removeLast()
                                 }
                             }
                         }
+                    }
                 },
                 ClassReader.SKIP_DEBUG or ClassReader.SKIP_FRAMES,
             )
         }
 
+        private fun addForwardingConstructors(
+            constructedType: String,
+            originalOwner: String,
+            descriptor: String,
+        ) {
+            var current: String? = constructedType
+            while (current != null && current != originalOwner) {
+                val info = classInfo(current) ?: return
+                if (descriptor !in info.constructors) {
+                    syntheticConstructors
+                        .getOrPut(current, ::mutableSetOf)
+                        .add(descriptor)
+                }
+                current = info.superName
+            }
+        }
+
         private fun ClassReader.toClassInfo(): ClassInfo {
-            var hasConstructor = false
+            val constructors = mutableSetOf<String>()
             accept(
                 object : ClassVisitor(Opcodes.ASM9) {
                     override fun visitMethod(
@@ -616,7 +1153,7 @@ object BytecodeEditor {
                         signature: String?,
                         exceptions: Array<out String>?,
                     ): MethodVisitor? {
-                        if (name == "<init>") hasConstructor = true
+                        if (name == "<init>" && descriptor != null) constructors.add(descriptor)
                         return null
                     }
                 },
@@ -626,7 +1163,8 @@ object BytecodeEditor {
                 superName = superName,
                 interfaces = interfaces.toList(),
                 isInterface = access and Opcodes.ACC_INTERFACE != 0,
-                hasConstructor = hasConstructor,
+                isAbstract = access and Opcodes.ACC_ABSTRACT != 0,
+                constructors = constructors,
             )
         }
 
