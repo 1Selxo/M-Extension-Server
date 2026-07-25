@@ -6,6 +6,8 @@ import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.HttpSource
+import okhttp3.Headers
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
@@ -79,6 +81,25 @@ class MihonImageProxyTest {
         assertEquals(listOf("https://broken.test/poster.jpg", "https://fallback.test/poster.jpg"), source.requestedUrls)
         assertEquals("image/jpeg", image.contentType)
         assertContentEquals(source.imageBytes, image.bytes)
+    }
+
+    @Test
+    fun `removes cross-site referrers from MangaDex covers`() {
+        val sourceHeaders =
+            Headers.headersOf(
+                "Referer",
+                "https://www.klraw.info/",
+                "Origin",
+                "https://www.klraw.info",
+                "User-Agent",
+                "test-agent",
+            )
+
+        val result = MihonImageProxy.headersForImage("https://uploads.mangadex.org/covers/id/file.jpg".toHttpUrl(), sourceHeaders)
+
+        assertEquals(null, result["Referer"])
+        assertEquals(null, result["Origin"])
+        assertEquals("test-agent", result["User-Agent"])
     }
 
     private class TestHttpSource(

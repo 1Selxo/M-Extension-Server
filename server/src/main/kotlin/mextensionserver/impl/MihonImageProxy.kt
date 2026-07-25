@@ -3,6 +3,8 @@ package mextensionserver.impl
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.online.HttpSource
 import okhttp3.Headers
+import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.util.UUID
@@ -16,6 +18,7 @@ import java.util.UUID
  */
 internal object MihonImageProxy {
     private const val MAX_ENTRIES = 4096
+    private const val MANGADEX_COVER_HOST = "uploads.mangadex.org"
 
     data class ImageData(
         val bytes: ByteArray,
@@ -194,11 +197,13 @@ internal object MihonImageProxy {
         url: String,
     ): ImageData? =
         runCatching {
+            val requestUrl = url.toHttpUrl()
+            val sourceHeaders = runCatching { source.headers }.getOrDefault(Headers.Builder().build())
             val request =
                 Request
                     .Builder()
-                    .url(url)
-                    .headers(runCatching { source.headers }.getOrDefault(Headers.Builder().build()))
+                    .url(requestUrl)
+                    .headers(headersForImage(requestUrl, sourceHeaders))
                     .build()
             source.client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) return@use null
@@ -211,6 +216,20 @@ internal object MihonImageProxy {
                 )
             }
         }.getOrNull()
+
+    internal fun headersForImage(
+        url: HttpUrl,
+        headers: Headers,
+    ): Headers =
+        if (url.host == MANGADEX_COVER_HOST) {
+            headers
+                .newBuilder()
+                .removeAll("Referer")
+                .removeAll("Origin")
+                .build()
+        } else {
+            headers
+        }
 
     private fun proxyUrl(
         currentPort: Int,

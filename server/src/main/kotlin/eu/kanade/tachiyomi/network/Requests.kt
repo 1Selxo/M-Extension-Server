@@ -57,6 +57,18 @@ fun POST(
         .cacheControl(cache)
         .build()
 
+suspend fun OkHttpClient.get(
+    url: String,
+    headers: Headers = DEFAULT_HEADERS,
+    cache: CacheControl = DEFAULT_CACHE_CONTROL,
+): Response = newCall(GET(url, headers, cache)).awaitSuccess()
+
+suspend fun OkHttpClient.get(
+    url: HttpUrl,
+    headers: Headers = DEFAULT_HEADERS,
+    cache: CacheControl = DEFAULT_CACHE_CONTROL,
+): Response = newCall(GET(url, headers, cache)).awaitSuccess()
+
 suspend fun OkHttpClient.post(
     url: String,
     headers: Headers = DEFAULT_HEADERS,
