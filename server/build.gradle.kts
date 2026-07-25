@@ -39,7 +39,7 @@ sourceSets {
 }
 
 // should be bumped with each stable release
-val m_extension_serverVersion = "v1.0.4.7"
+val m_extension_serverVersion = "v1.0.4.8"
 
 // counts commit count on master
 val m_extension_serverRevision = runCatching {
