@@ -115,6 +115,32 @@ class BytecodeEditorTest {
         }
     }
 
+    @Test
+    fun `repairs interface method constant pool references`() {
+        val jar = Files.createTempFile("mextension-bytecode-interface-method", ".jar")
+        try {
+            JarOutputStream(Files.newOutputStream(jar)).use { output ->
+                output.writeClass(SERIALIZER_INTERFACE, serializerInterface())
+                output.writeClass(SERIALIZER_IMPLEMENTATION, serializerImplementation())
+                output.writeClass(SERIALIZER_CALLER, serializerCaller())
+            }
+
+            BytecodeEditor.fixAndroidClasses(jar)
+
+            URLClassLoader(arrayOf(jar.toUri().toURL()), javaClass.classLoader).use { loader ->
+                val interfaceClass = loader.loadClass(SERIALIZER_INTERFACE.replace('/', '.'))
+                val implementationClass = loader.loadClass(SERIALIZER_IMPLEMENTATION.replace('/', '.'))
+                val callerClass = loader.loadClass(SERIALIZER_CALLER.replace('/', '.'))
+                val implementation = implementationClass.getConstructor().newInstance()
+                val value = callerClass.getMethod("call", interfaceClass).invoke(null, implementation)
+
+                assertEquals("repaired", value)
+            }
+        } finally {
+            Files.deleteIfExists(jar)
+        }
+    }
+
     private fun JarOutputStream.writeClass(
         name: String,
         bytes: ByteArray,
@@ -453,6 +479,94 @@ class BytecodeEditorTest {
         return writer.toByteArray()
     }
 
+    private fun serializerInterface(): ByteArray {
+        val writer = ClassWriter(0)
+        writer.visit(
+            Opcodes.V1_8,
+            Opcodes.ACC_PUBLIC or Opcodes.ACC_ABSTRACT or Opcodes.ACC_INTERFACE,
+            SERIALIZER_INTERFACE,
+            null,
+            "java/lang/Object",
+            null,
+        )
+        writer
+            .visitMethod(
+                Opcodes.ACC_PUBLIC or Opcodes.ACC_ABSTRACT,
+                "value",
+                "()Ljava/lang/String;",
+                null,
+                null,
+            ).visitEnd()
+        writer.visitEnd()
+        return writer.toByteArray()
+    }
+
+    private fun serializerImplementation(): ByteArray {
+        val writer = ClassWriter(0)
+        writer.visit(
+            Opcodes.V1_8,
+            Opcodes.ACC_PUBLIC or Opcodes.ACC_FINAL or Opcodes.ACC_SUPER,
+            SERIALIZER_IMPLEMENTATION,
+            null,
+            "java/lang/Object",
+            arrayOf(SERIALIZER_INTERFACE),
+        )
+        writer.visitMethod(Opcodes.ACC_PUBLIC, "<init>", "()V", null, null).apply {
+            visitCode()
+            visitVarInsn(Opcodes.ALOAD, 0)
+            visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false)
+            visitInsn(Opcodes.RETURN)
+            visitMaxs(1, 1)
+            visitEnd()
+        }
+        writer.visitMethod(Opcodes.ACC_PUBLIC, "value", "()Ljava/lang/String;", null, null).apply {
+            visitCode()
+            visitLdcInsn("repaired")
+            visitInsn(Opcodes.ARETURN)
+            visitMaxs(1, 1)
+            visitEnd()
+        }
+        writer.visitEnd()
+        return writer.toByteArray()
+    }
+
+    private fun serializerCaller(): ByteArray {
+        val writer = ClassWriter(0)
+        writer.visit(
+            Opcodes.V1_8,
+            Opcodes.ACC_PUBLIC or Opcodes.ACC_FINAL or Opcodes.ACC_SUPER,
+            SERIALIZER_CALLER,
+            null,
+            "java/lang/Object",
+            null,
+        )
+        writer
+            .visitMethod(
+                Opcodes.ACC_PUBLIC or Opcodes.ACC_STATIC,
+                "call",
+                "(L$SERIALIZER_INTERFACE;)Ljava/lang/String;",
+                null,
+                null,
+            ).apply {
+                visitCode()
+                visitVarInsn(Opcodes.ALOAD, 0)
+                // Dex2jar occasionally emits invokeinterface with a Methodref
+                // constant instead of the required InterfaceMethodref.
+                visitMethodInsn(
+                    Opcodes.INVOKEINTERFACE,
+                    SERIALIZER_INTERFACE,
+                    "value",
+                    "()Ljava/lang/String;",
+                    false,
+                )
+                visitInsn(Opcodes.ARETURN)
+                visitMaxs(1, 1)
+                visitEnd()
+            }
+        writer.visitEnd()
+        return writer.toByteArray()
+    }
+
     private companion object {
         const val BASE_CLASS = "mextensionserver/test/GeneratedBase"
         const val DERIVED_CLASS = "mextensionserver/test/GeneratedDerived"
@@ -465,5 +579,8 @@ class BytecodeEditorTest {
         const val ABSTRACT_FACTORY_CLASS = "mextensionserver/test/GeneratedAbstractFactory"
         const val EXCEPTION_CLASS = "mextensionserver/test/GeneratedException"
         const val EXCEPTION_FACTORY_CLASS = "mextensionserver/test/GeneratedExceptionFactory"
+        const val SERIALIZER_INTERFACE = "mextensionserver/test/GeneratedSerializer"
+        const val SERIALIZER_IMPLEMENTATION = "mextensionserver/test/GeneratedSerializerImpl"
+        const val SERIALIZER_CALLER = "mextensionserver/test/GeneratedSerializerCaller"
     }
 }

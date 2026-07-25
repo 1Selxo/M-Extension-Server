@@ -484,7 +484,7 @@ object MihonInvoker {
 
         return runBlocking {
             val videos = source.getVideoList(episodeData.toSEpisode())
-            videos
+            videos.map { MihonVideoProxy.proxy(source, it) }
         }
     }
 

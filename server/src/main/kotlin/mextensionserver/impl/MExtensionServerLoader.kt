@@ -146,6 +146,7 @@ object MExtensionServerLoader {
 
     fun cleanupTempFiles() {
         MihonImageProxy.clear()
+        MihonVideoProxy.clear()
         try {
             loadedExtensions.close()
         } catch (e: Exception) {

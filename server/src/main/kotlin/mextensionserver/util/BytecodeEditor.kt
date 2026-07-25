@@ -478,6 +478,8 @@ object BytecodeEditor {
             return OBJECT
         }
 
+        fun isInterface(name: String): Boolean = resolve(name)?.isInterface == true
+
         private fun commonArrayType(
             type1: String,
             type2: String,
@@ -736,15 +738,24 @@ object BytecodeEditor {
                             desc: String?,
                             itf: Boolean,
                         ) {
+                            val replacedOwner = owner.replaceDirectly()
+                            val ownerIsInterface =
+                                replacedOwner?.let(hierarchy::isInterface) == true
+                            val repairedOpcode =
+                                if (opcode == Opcodes.INVOKEVIRTUAL && ownerIsInterface) {
+                                    Opcodes.INVOKEINTERFACE
+                                } else {
+                                    opcode
+                                }
                             logger.trace {
-                                "Method" to "$opcode: ${owner.replaceDirectly()}: $name: ${desc.replaceIndirectly()}"
+                                "Method" to "$repairedOpcode: $replacedOwner: $name: ${desc.replaceIndirectly()}"
                             }
                             super.visitMethodInsn(
-                                opcode,
-                                owner.replaceDirectly(),
+                                repairedOpcode,
+                                replacedOwner,
                                 name,
                                 desc.replaceIndirectly(),
-                                itf,
+                                itf || ownerIsInterface,
                             )
                         }
 

@@ -4,6 +4,7 @@ import fi.iki.elonen.NanoHTTPD
 import io.github.oshai.kotlinlogging.KotlinLogging
 import mextensionserver.impl.MExtensionServerLoader
 import mextensionserver.impl.MihonImageProxy
+import mextensionserver.impl.MihonVideoProxy
 import java.io.IOException
 
 class MExtensionServerController {
@@ -16,6 +17,7 @@ class MExtensionServerController {
             server?.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false)
             val actualPort = server?.listeningPort ?: 0
             MihonImageProxy.configure(actualPort)
+            MihonVideoProxy.configure(actualPort)
             logger.info { "mextensionserver server started on port $actualPort" }
         } catch (e: IOException) {
             logger.error(e) { "Failed to start mextensionserver server" }
@@ -44,7 +46,7 @@ class MExtensionServerController {
                     newFixedLengthResponse(
                         Response.Status.OK,
                         "application/json",
-                        """{"mangatanMihonBridge":1,"sourceFactory":true,"preferenceCallbacks":true,"imageProxy":true,"sourceUrls":true}""",
+                        """{"mangatanMihonBridge":1,"sourceFactory":true,"preferenceCallbacks":true,"imageProxy":true,"videoProxy":true,"sourceUrls":true}""",
                     )
                 "/stop" -> {
                     newFixedLengthResponse("Server stopping").also {
@@ -57,6 +59,8 @@ class MExtensionServerController {
                 else ->
                     if (session.uri.startsWith(ImageProxyHandler.ROUTE_PREFIX)) {
                         ImageProxyHandler().serve(session)
+                    } else if (session.uri.startsWith(VideoProxyHandler.ROUTE_PREFIX)) {
+                        VideoProxyHandler().serve(session)
                     } else {
                         newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "Not Found")
                     }
