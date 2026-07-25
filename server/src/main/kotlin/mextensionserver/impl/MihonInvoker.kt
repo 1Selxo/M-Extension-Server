@@ -201,7 +201,12 @@ object MihonInvoker {
         page: Int,
     ): MangaResponse =
         runBlocking {
-            val mangasPage = source.getLatestUpdates(page)
+            val mangasPage =
+                if (source.supportsLatest) {
+                    source.getLatestUpdates(page)
+                } else {
+                    source.getPopularManga(page)
+                }
             MangaResponse(
                 mangas = mangasPage.mangas.map { it.toJManga() },
                 hasNextPage = mangasPage.hasNextPage,

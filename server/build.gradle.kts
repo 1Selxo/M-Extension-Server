@@ -16,6 +16,7 @@ plugins {
 dependencies {
     implementation(libs.bundles.okhttp)
     implementation(libs.icu4j.charset)
+    implementation(libs.quickjs4j)
     testImplementation(kotlin("test"))
 
     // AndroidCompat

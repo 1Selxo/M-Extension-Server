@@ -3,8 +3,13 @@ package mextensionserver.impl
 import androidx.preference.Preference
 import eu.kanade.tachiyomi.animesource.model.AnimeFilter
 import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
+import eu.kanade.tachiyomi.source.CatalogueSource
+import eu.kanade.tachiyomi.source.model.FilterList
+import eu.kanade.tachiyomi.source.model.MangasPage
+import eu.kanade.tachiyomi.source.model.SManga
 import mextensionserver.model.JFilterList
 import mextensionserver.model.JGroupFilter
+import mextensionserver.model.MangaResponse
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -74,6 +79,24 @@ class MihonInvokerTest {
         assertEquals("new", preference.currentValue)
     }
 
+    @Test
+    fun `uses popular feed when stale client requests unsupported latest feed`() {
+        val method =
+            MihonInvoker::class.java.getDeclaredMethod(
+                "invokeGetLatestManga",
+                CatalogueSource::class.java,
+                Int::class.javaPrimitiveType,
+            )
+        method.isAccessible = true
+
+        val result = method.invoke(MihonInvoker, NoLatestSource(), 1) as MangaResponse
+
+        val mangas = requireNotNull(result.mangas)
+        assertEquals(1, mangas.size)
+        assertEquals("Popular fallback", mangas.single().title)
+        assertEquals(false, result.hasNextPage)
+    }
+
     private fun convertAnimeFilterList(
         originalFilters: AnimeFilterList,
         requestedFilters: List<JFilterList>,
@@ -104,5 +127,27 @@ class MihonInvokerTest {
         override fun saveNewValue(value: Any) {
             this.value = value
         }
+    }
+
+    private class NoLatestSource : CatalogueSource {
+        override val id = 1L
+        override val name = "No latest"
+        override val lang = "ja"
+        override val supportsLatest = false
+
+        override suspend fun getPopularManga(page: Int): MangasPage {
+            val manga =
+                SManga.create().apply {
+                    title = "Popular fallback"
+                    url = "/popular"
+                }
+            return MangasPage(listOf(manga), hasNextPage = false)
+        }
+
+        override suspend fun getLatestUpdates(page: Int): MangasPage {
+            error("Latest must not be called")
+        }
+
+        override fun getFilterList() = FilterList()
     }
 }
