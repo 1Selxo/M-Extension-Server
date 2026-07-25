@@ -15,6 +15,13 @@ import org.objectweb.asm.FieldVisitor
 import org.objectweb.asm.Handle
 import org.objectweb.asm.MethodVisitor
 import org.objectweb.asm.Opcodes
+import org.objectweb.asm.Type
+import org.objectweb.asm.tree.ClassNode
+import org.objectweb.asm.tree.FieldInsnNode
+import org.objectweb.asm.tree.TypeInsnNode
+import org.objectweb.asm.tree.analysis.Analyzer
+import org.objectweb.asm.tree.analysis.SourceInterpreter
+import org.objectweb.asm.tree.analysis.SourceValue
 import java.nio.file.FileSystems
 import java.nio.file.Files
 import java.nio.file.Path
@@ -41,7 +48,12 @@ object BytecodeEditor {
                     .mapNotNull(::getClassBytes)
                     .toList()
             val hierarchy = ClassHierarchy(classes.map(Pair<Path, ByteArray>::second))
-            classes
+            val repairedClasses =
+                classes.map { (path, bytes) ->
+                    path to hierarchy.repairDexAllocations(bytes)
+                }
+            hierarchy.findSyntheticConstructors(repairedClasses.map(Pair<Path, ByteArray>::second))
+            repairedClasses
                 .asSequence()
                 .map { classFile -> transform(classFile, hierarchy) }
                 .forEach(::write)
@@ -151,7 +163,7 @@ object BytecodeEditor {
                     type2: String,
                 ): String = hierarchy.commonSuperClass(type1, type2)
             }
-        val needsConstructor = hierarchy.needsSyntheticConstructor(cr.className)
+        val syntheticConstructors = hierarchy.syntheticConstructors(cr.className)
         // Modify the class
         cr.accept(
             object : ClassVisitor(Opcodes.ASM9, cw) {
@@ -221,7 +233,15 @@ object BytecodeEditor {
                             opcode: Int,
                             type: String?,
                         ) {
-                            val replacementType = type.replaceDirectly()
+                            var replacementType = type.replaceDirectly()
+                            if (
+                                opcode == Opcodes.NEW &&
+                                name == "<clinit>" &&
+                                replacementType != null &&
+                                hierarchy.shouldInstantiateSubclass(cr.className, replacementType)
+                            ) {
+                                replacementType = cr.className
+                            }
                             logger.trace {
                                 "Type" to "$opcode: $replacementType"
                             }
@@ -251,8 +271,8 @@ object BytecodeEditor {
                                 if (replacementOwner == constructedType) {
                                     pendingConstructions.removeLast()
                                 } else if (
-                                    desc == "()V" &&
-                                    hierarchy.needsSyntheticConstructor(constructedType) &&
+                                    desc != null &&
+                                    hierarchy.needsSyntheticConstructor(constructedType, desc) &&
                                     replacementOwner == hierarchy.superName(constructedType)
                                 ) {
                                     // dex2jar can emit `new Child` followed by
@@ -303,15 +323,20 @@ object BytecodeEditor {
                 }
 
                 override fun visitEnd() {
-                    if (needsConstructor) {
-                        visitMethod(Opcodes.ACC_PUBLIC, "<init>", "()V", null, null)?.apply {
+                    syntheticConstructors.forEach { descriptor ->
+                        visitMethod(Opcodes.ACC_PUBLIC, "<init>", descriptor, null, null)?.apply {
                             visitCode()
                             visitVarInsn(Opcodes.ALOAD, 0)
+                            var localIndex = 1
+                            Type.getArgumentTypes(descriptor).forEach { argument ->
+                                visitVarInsn(argument.getOpcode(Opcodes.ILOAD), localIndex)
+                                localIndex += argument.size
+                            }
                             visitMethodInsn(
                                 Opcodes.INVOKESPECIAL,
                                 hierarchy.superName(cr.className),
                                 "<init>",
-                                "()V",
+                                descriptor,
                                 false,
                             )
                             visitInsn(Opcodes.RETURN)
@@ -351,6 +376,7 @@ object BytecodeEditor {
         classBytes: List<ByteArray>,
     ) {
         private val classes = mutableMapOf<String, ClassInfo?>()
+        private val syntheticConstructors = mutableMapOf<String, MutableSet<String>>()
         private val classLoader = BytecodeEditor::class.java.classLoader
 
         init {
@@ -358,6 +384,10 @@ object BytecodeEditor {
                 val reader = ClassReader(bytes)
                 classes[reader.className] = reader.toClassInfo()
             }
+        }
+
+        fun findSyntheticConstructors(classBytes: List<ByteArray>) {
+            classBytes.forEach(::findSyntheticConstructors)
         }
 
         fun commonSuperClass(
@@ -384,10 +414,19 @@ object BytecodeEditor {
 
         fun superName(name: String): String? = classInfo(name)?.superName
 
-        fun needsSyntheticConstructor(name: String): Boolean {
-            val info = classInfo(name) ?: return false
-            return !info.isInterface && !info.hasConstructor && info.superName == OBJECT
-        }
+        fun syntheticConstructors(name: String): Set<String> = syntheticConstructors[name].orEmpty()
+
+        fun needsSyntheticConstructor(
+            name: String,
+            descriptor: String,
+        ): Boolean = descriptor in syntheticConstructors(name)
+
+        fun shouldInstantiateSubclass(
+            className: String,
+            instantiatedType: String,
+        ): Boolean =
+            syntheticConstructors(className).isNotEmpty() &&
+                instantiatedType == superName(className)
 
         private fun commonArrayType(
             type1: String,
@@ -428,6 +467,142 @@ object BytecodeEditor {
                     ?.use { ClassReader(it).toClassInfo() }
             classes[name] = info
             return info
+        }
+
+        fun repairDexAllocations(bytes: ByteArray): ByteArray {
+            val node = ClassNode(Opcodes.ASM9)
+            ClassReader(bytes).accept(node, 0)
+            var changed = false
+
+            node.methods.forEach { method ->
+                val frames =
+                    runCatching {
+                        Analyzer(
+                            object : SourceInterpreter(Opcodes.ASM9) {
+                                override fun copyOperation(
+                                    instruction: org.objectweb.asm.tree.AbstractInsnNode,
+                                    value: SourceValue,
+                                ): SourceValue = value
+                            },
+                        ).analyze(node.name, method)
+                    }.getOrNull() ?: return@forEach
+
+                method.instructions.toArray().forEachIndexed { index, instruction ->
+                    val field = instruction as? FieldInsnNode ?: return@forEachIndexed
+                    val frame = frames[index] ?: return@forEachIndexed
+                    when (field.opcode) {
+                        Opcodes.PUTFIELD -> {
+                            repairAllocation(frame.getStack(frame.stackSize - 2), field.owner).also {
+                                changed = changed || it
+                            }
+                        }
+                        Opcodes.PUTSTATIC -> {
+                            val expectedType = Type.getType(field.desc)
+                            if (expectedType.sort == Type.OBJECT) {
+                                repairAllocation(frame.getStack(frame.stackSize - 1), expectedType.internalName).also {
+                                    changed = changed || it
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (!changed) return bytes
+            return ClassWriter(0).also(node::accept).toByteArray()
+        }
+
+        private fun repairAllocation(
+            value: SourceValue,
+            expectedType: String,
+        ): Boolean {
+            val expectedInfo = classInfo(expectedType) ?: return false
+            if (expectedInfo.isInterface || expectedInfo.hasConstructor) return false
+
+            var changed = false
+            value.insns
+                .filterIsInstance<TypeInsnNode>()
+                .filter { it.opcode == Opcodes.NEW && it.desc == expectedInfo.superName }
+                .forEach {
+                    it.desc = expectedType
+                    changed = true
+                }
+            return changed
+        }
+
+        private fun findSyntheticConstructors(bytes: ByteArray) {
+            val reader = ClassReader(bytes)
+            val currentClass = reader.className
+            reader.accept(
+                object : ClassVisitor(Opcodes.ASM9) {
+                    override fun visitMethod(
+                        access: Int,
+                        name: String?,
+                        descriptor: String?,
+                        signature: String?,
+                        exceptions: Array<out String>?,
+                    ): MethodVisitor =
+                        object : MethodVisitor(Opcodes.ASM9) {
+                            private val pendingConstructions = ArrayDeque<String>()
+
+                            override fun visitTypeInsn(
+                                opcode: Int,
+                                type: String?,
+                            ) {
+                                if (opcode == Opcodes.NEW && type != null) {
+                                    val replacementType = type.replaceDirectly()
+                                    val info = classInfo(currentClass)
+                                    if (
+                                        name == "<clinit>" &&
+                                        info?.hasConstructor == false &&
+                                        replacementType == info?.superName
+                                    ) {
+                                        pendingConstructions.addLast(currentClass)
+                                    } else {
+                                        pendingConstructions.addLast(replacementType)
+                                    }
+                                }
+                            }
+
+                            override fun visitMethodInsn(
+                                opcode: Int,
+                                owner: String?,
+                                name: String?,
+                                descriptor: String?,
+                                isInterface: Boolean,
+                            ) {
+                                if (
+                                    opcode != Opcodes.INVOKESPECIAL ||
+                                    name != "<init>" ||
+                                    descriptor == null ||
+                                    pendingConstructions.isEmpty()
+                                ) {
+                                    return
+                                }
+
+                                val constructedType = pendingConstructions.last()
+                                val replacementOwner = owner.replaceDirectly()
+                                if (replacementOwner == constructedType) {
+                                    pendingConstructions.removeLast()
+                                    return
+                                }
+
+                                val info = classInfo(constructedType) ?: return
+                                if (
+                                    !info.isInterface &&
+                                    !info.hasConstructor &&
+                                    replacementOwner == info.superName
+                                ) {
+                                    syntheticConstructors
+                                        .getOrPut(constructedType, ::mutableSetOf)
+                                        .add(descriptor)
+                                    pendingConstructions.removeLast()
+                                }
+                            }
+                        }
+                },
+                ClassReader.SKIP_DEBUG or ClassReader.SKIP_FRAMES,
+            )
         }
 
         private fun ClassReader.toClassInfo(): ClassInfo {
