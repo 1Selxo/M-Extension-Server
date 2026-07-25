@@ -46,6 +46,7 @@ import uy.kohesive.injekt.api.get
 object MihonInvoker {
     private val logger = KotlinLogging.logger {}
     private const val BRIDGE_CONTEXT_KEY = "__mangatan_bridge_context__"
+    private const val KL_RAW_SOURCE_ID = "7433897302034602657"
     private val context: Application
         get() = Injekt.get()
 
@@ -195,7 +196,7 @@ object MihonInvoker {
         runBlocking {
             val mangasPage = source.getPopularManga(page)
             MangaResponse(
-                mangas = mangasPage.mangas.map { it.toJManga() },
+                mangas = mangasPage.mangas.map { bridgeManga(source, it) },
                 hasNextPage = mangasPage.hasNextPage,
             )
         }
@@ -212,7 +213,7 @@ object MihonInvoker {
                     source.getPopularManga(page)
                 }
             MangaResponse(
-                mangas = mangasPage.mangas.map { it.toJManga() },
+                mangas = mangasPage.mangas.map { bridgeManga(source, it) },
                 hasNextPage = mangasPage.hasNextPage,
             )
         }
@@ -227,7 +228,7 @@ object MihonInvoker {
             val convertedFilters = filterList?.let { convertFilterList(source.getFilterList(), it) } ?: source.getFilterList()
             val mangasPage = source.getSearchManga(page, search, convertedFilters)
             MangaResponse(
-                mangas = mangasPage.mangas.map { it.toJManga() },
+                mangas = mangasPage.mangas.map { bridgeManga(source, it) },
                 hasNextPage = mangasPage.hasNextPage,
             )
         }
@@ -253,8 +254,23 @@ object MihonInvoker {
                         fetchDetails = true,
                         fetchChapters = false,
                     ).manga
-            detailedManga.toJManga()
+            bridgeManga(source, detailedManga)
         }
+    }
+
+    private fun bridgeManga(
+        source: CatalogueSource,
+        manga: SManga,
+    ): JManga {
+        val converted = manga.toJManga()
+        if (source !is HttpSource || source.id.toString() != KL_RAW_SOURCE_ID) return converted
+
+        val thumbnailUrl = converted.thumbnail_url?.takeIf(String::isNotBlank) ?: return converted
+        return converted.copy(
+            thumbnail_url =
+                MihonImageProxy.registerPoster(source, converted.title, thumbnailUrl)
+                    ?: thumbnailUrl,
+        )
     }
 
     private fun invokeGetMangaUrl(

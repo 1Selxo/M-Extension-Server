@@ -57,9 +57,36 @@ class MihonImageProxyTest {
         assertEquals(source.resolvedImageUrl, page.imageUrl)
     }
 
-    private class TestHttpSource : HttpSource() {
+    @Test
+    fun `falls back when a poster origin is broken`() {
+        val source = TestHttpSource(brokenPosterOrigin = true)
+        MihonImageProxy.configure(39641)
+
+        val proxyUrl =
+            requireNotNull(
+                MihonImageProxy.registerPoster(
+                    source = source,
+                    title = "Poster title",
+                    url = "https://broken.test/poster.jpg",
+                    resolver = { _, title ->
+                        assertEquals("Poster title", title)
+                        "https://fallback.test/poster.jpg"
+                    },
+                ),
+            )
+        val image = requireNotNull(MihonImageProxy.fetch(URI(proxyUrl).path.substringAfterLast('/')))
+
+        assertEquals(listOf("https://broken.test/poster.jpg", "https://fallback.test/poster.jpg"), source.requestedUrls)
+        assertEquals("image/jpeg", image.contentType)
+        assertContentEquals(source.imageBytes, image.bytes)
+    }
+
+    private class TestHttpSource(
+        private val brokenPosterOrigin: Boolean = false,
+    ) : HttpSource() {
         val imageBytes = byteArrayOf(0xff.toByte(), 0xd8.toByte(), 0xff.toByte(), 0xd9.toByte())
         val resolvedImageUrl = "https://example.test/resolved.jpg"
+        val requestedUrls = mutableListOf<String>()
         var seenFragment: String? = null
         var imageUrlFetches = 0
 
@@ -72,14 +99,21 @@ class MihonImageProxyTest {
                 .Builder()
                 .addInterceptor { chain ->
                     seenFragment = chain.request().url.fragment
+                    requestedUrls += chain.request().url.toString()
+                    val broken = brokenPosterOrigin && chain.request().url.host == "broken.test"
                     Response
                         .Builder()
                         .request(chain.request())
                         .protocol(Protocol.HTTP_1_1)
-                        .code(200)
-                        .message("OK")
-                        .body(imageBytes.toResponseBody("image/jpeg".toMediaType()))
-                        .build()
+                        .code(if (broken) 404 else 200)
+                        .message(if (broken) "Not Found" else "OK")
+                        .body(
+                            if (broken) {
+                                "not found".toResponseBody("text/plain".toMediaType())
+                            } else {
+                                imageBytes.toResponseBody("image/jpeg".toMediaType())
+                            },
+                        ).build()
                 }.build()
 
         override fun fetchImageUrl(page: Page): Observable<String> {
