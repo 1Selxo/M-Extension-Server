@@ -386,7 +386,16 @@ object MihonInvoker {
         page: Int,
     ): AnimeResponse =
         runBlocking {
-            val animesPage = source.getLatestUpdates(page)
+            val animesPage =
+                if (source.supportsLatest) {
+                    try {
+                        source.getLatestUpdates(page)
+                    } catch (_: UnsupportedOperationException) {
+                        source.getPopularAnime(page)
+                    }
+                } else {
+                    source.getPopularAnime(page)
+                }
             AnimeResponse(
                 animes = animesPage.animes.map { it.toJAnime() },
                 hasNextPage = animesPage.hasNextPage,

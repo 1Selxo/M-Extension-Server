@@ -17,7 +17,6 @@ import eu.kanade.tachiyomi.network.interceptor.UserAgentInterceptor
 import okhttp3.Cache
 import okhttp3.OkHttpClient
 import okhttp3.brotli.BrotliInterceptor
-import okhttp3.logging.HttpLoggingInterceptor
 import java.nio.file.Files
 import java.util.concurrent.TimeUnit
 
@@ -35,7 +34,6 @@ class NetworkHelper(
                 .addInterceptor(UserAgentInterceptor(::defaultUserAgentProvider))
                 .addInterceptor(CloudflareInterceptor())
                 .addInterceptor(MangaFireProtectionInterceptor())
-                .addInterceptor(HttpLoggingInterceptor().setLevel(HttpLoggingInterceptor.Level.BODY))
                 .addNetworkInterceptor(IgnoreGzipInterceptor())
                 .addNetworkInterceptor(BrotliInterceptor)
                 .connectTimeout(30, TimeUnit.SECONDS)

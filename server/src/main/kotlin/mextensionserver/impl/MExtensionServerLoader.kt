@@ -67,10 +67,29 @@ object MExtensionServerLoader {
         }
     }
 
+    data class ExtensionInvocation<T>(
+        val extensionId: String,
+        val result: T,
+    )
+
+    class ExtensionNotLoadedException(
+        extensionId: String,
+    ) : IllegalStateException("Extension handle $extensionId is no longer loaded; resend the APK")
+
     fun <T> invokeWithExtension(
-        base64Data: String,
+        base64Data: String?,
+        extensionId: String?,
         block: (LoadedExtension) -> T,
-    ): T = loadedExtensions.use(Base64.getDecoder().decode(base64Data), block)
+    ): ExtensionInvocation<T> {
+        val keyedResult =
+            if (base64Data != null) {
+                loadedExtensions.useAndGetKey(Base64.getDecoder().decode(base64Data), block)
+            } else {
+                val key = requireNotNull(extensionId) { "Either data or extensionId is required" }
+                loadedExtensions.useByKey(key, block) ?: throw ExtensionNotLoadedException(key)
+            }
+        return ExtensionInvocation(keyedResult.key, keyedResult.value)
+    }
 
     private fun loadExtension(apkData: ByteArray): LoadedExtension {
         val tempApkFile = File(tempDir, "extension-${UUID.randomUUID()}.apk")

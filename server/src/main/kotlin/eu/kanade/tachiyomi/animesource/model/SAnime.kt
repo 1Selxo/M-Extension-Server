@@ -21,6 +21,8 @@ interface SAnime : Serializable {
 
     var thumbnail_url: String?
 
+    var background_url: String?
+
     var update_strategy: AnimeUpdateStrategy
 
     var initialized: Boolean
@@ -46,6 +48,10 @@ interface SAnime : Serializable {
 
         if (other.thumbnail_url != null) {
             thumbnail_url = other.thumbnail_url
+        }
+
+        if (other.background_url != null) {
+            background_url = other.background_url
         }
 
         status = other.status

@@ -46,7 +46,7 @@ class MExtensionServerController {
                     newFixedLengthResponse(
                         Response.Status.OK,
                         "application/json",
-                        """{"mangatanMihonBridge":1,"sourceFactory":true,"preferenceCallbacks":true,"imageProxy":true,"videoProxy":true,"sourceUrls":true}""",
+                        """{"mangatanMihonBridge":1,"sourceFactory":true,"preferenceCallbacks":true,"imageProxy":true,"videoProxy":true,"sourceUrls":true,"extensionHandles":true}""",
                     )
                 "/stop" -> {
                     newFixedLengthResponse("Server stopping").also {
