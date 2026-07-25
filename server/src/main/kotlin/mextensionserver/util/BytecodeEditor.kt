@@ -130,18 +130,19 @@ object BytecodeEditor {
      * @return [ByteArray] with modified bytecode
      */
     private fun transform(pair: Pair<Path, ByteArray>): Pair<Path, ByteArray> {
+        // ASM frame recomputation is not a no-op for dex2jar output. Obfuscated
+        // constructor flows may contain verifier-valid uninitialized-object
+        // frames that cannot be reconstructed without the full Android class
+        // path. Do not rewrite classes outside this rewriter's scope.
+        if (!requiresAndroidClassReplacement(pair.second)) {
+            return pair
+        }
+
         // Read the class and prepare to modify it
         val cr = ClassReader(pair.second)
-        // dex2jar can emit stale stack-map frames for obfuscated Kotlin default
-        // methods. Recompute them while rewriting Android class references so
-        // the resulting JAR passes normal JVM bytecode verification.
-        val cw =
-            object : ClassWriter(cr, COMPUTE_FRAMES or COMPUTE_MAXS) {
-                override fun getCommonSuperClass(
-                    type1: String,
-                    type2: String,
-                ): String = "java/lang/Object"
-            }
+        // Preserve dex2jar's stack-map frames. Recompute only max stack/local
+        // sizes, which does not alter constructor initialization state.
+        val cw = ClassWriter(cr, ClassWriter.COMPUTE_MAXS)
         // Modify the class
         cr.accept(
             object : ClassVisitor(Opcodes.ASM5, cw) {
@@ -195,6 +196,24 @@ object BytecodeEditor {
                             exceptions,
                         )
                     return object : MethodVisitor(Opcodes.ASM5, mv) {
+                        override fun visitFrame(
+                            type: Int,
+                            numLocal: Int,
+                            local: Array<out Any>?,
+                            numStack: Int,
+                            stack: Array<out Any>?,
+                        ) {
+                            // Object entries in StackMapTable frames are class
+                            // internal names and must follow descriptor rewrites.
+                            super.visitFrame(
+                                type,
+                                numLocal,
+                                local.replaceFrameTypes(),
+                                numStack,
+                                stack.replaceFrameTypes(),
+                            )
+                        }
+
                         override fun visitLdcInsn(cst: Any?) {
                             logger.trace { "Ldc" to "${cst?.let { "${it::class.java.simpleName}: $it" }}" }
                             super.visitLdcInsn(cst)
@@ -268,9 +287,37 @@ object BytecodeEditor {
                     }
                 }
             },
-            ClassReader.EXPAND_FRAMES,
+            0,
         )
         return pair.first to cw.toByteArray()
+    }
+
+    private fun Array<out Any>?.replaceFrameTypes(): Array<Any?>? =
+        this
+            ?.map { value ->
+                if (value is String) {
+                    value.replaceDirectly()
+                } else {
+                    value
+                }
+            }?.toTypedArray()
+
+    internal fun requiresAndroidClassReplacement(classBytes: ByteArray): Boolean =
+        classesToReplace.any { className ->
+            classBytes.containsBytes(className.toByteArray(Charsets.UTF_8))
+        }
+
+    private fun ByteArray.containsBytes(needle: ByteArray): Boolean {
+        if (needle.isEmpty()) return true
+        if (needle.size > size) return false
+
+        for (start in 0..size - needle.size) {
+            for (offset in needle.indices) {
+                if (this[start + offset] != needle[offset]) break
+                if (offset == needle.lastIndex) return true
+            }
+        }
+        return false
     }
 
     private fun write(pair: Pair<Path, ByteArray>) {
