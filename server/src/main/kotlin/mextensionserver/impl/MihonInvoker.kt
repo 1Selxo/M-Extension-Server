@@ -61,6 +61,10 @@ object MihonInvoker {
 
         preparePreferences(data, source)
 
+        if (UniqueStreamCompat.supports(source, data.method)) {
+            return UniqueStreamCompat.invoke(source as AnimeHttpSource, data)
+        }
+
         return when (data.method) {
             "headersManga" -> invokeHeadersManga(source as CatalogueSource)
             "filtersManga" -> invokeFiltersManga(source as CatalogueSource)
