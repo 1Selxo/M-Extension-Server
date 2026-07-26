@@ -122,12 +122,13 @@ object BytecodeEditor {
         val constructorsToAdd = mutableMapOf<String, MutableMap<String, String>>()
 
         parsed.values.forEach { (_, classNode) ->
+            repairInvalidSuperConstructorCalls(classNode, parsed, constructorsToAdd)
             classNode.methods.forEach { method ->
                 repairAllocations(method, parsed, missingConstructors, constructorsToAdd)
             }
         }
         constructorsToAdd.forEach { (className, constructors) ->
-            val classNode = missingConstructors.getValue(className)
+            val classNode = parsed.getValue(className).second
             constructors.forEach { (descriptor, superName) ->
                 classNode.methods.add(forwardingConstructor(superName, descriptor))
             }
@@ -183,6 +184,107 @@ object BytecodeEditor {
             allocation.desc = target
             constructor.owner = target
         }
+    }
+
+    /**
+     * DEX permits a subclass constructor to invoke a non-direct ancestor when
+     * intermediate obfuscated classes have no constructor. The JVM verifier
+     * requires every constructor to invoke its direct superclass instead.
+     */
+    private fun repairInvalidSuperConstructorCalls(
+        classNode: ClassNode,
+        classes: Map<String, Pair<String, ClassNode>>,
+        constructorsToAdd: MutableMap<String, MutableMap<String, String>>,
+    ) {
+        val directSuper = classNode.superName ?: return
+        classNode.methods
+            .filter { it.name == "<init>" }
+            .forEach { constructor ->
+                val instructions = constructor.instructions.toArray()
+                val allocationConstructors =
+                    instructions
+                        .mapIndexedNotNull { index, instruction ->
+                            val allocation = instruction as? TypeInsnNode ?: return@mapIndexedNotNull null
+                            if (allocation.opcode != Opcodes.NEW) return@mapIndexedNotNull null
+                            findMatchingConstructor(instructions, index, allocation.desc)
+                        }.toSet()
+
+                instructions.forEachIndexed { index, instruction ->
+                    val call = instruction as? MethodInsnNode ?: return@forEachIndexed
+                    if (index in allocationConstructors ||
+                        call.opcode != Opcodes.INVOKESPECIAL ||
+                        call.name != "<init>" ||
+                        call.owner == classNode.name ||
+                        call.owner == directSuper ||
+                        !isAncestor(directSuper, call.owner, classes)
+                    ) {
+                        return@forEachIndexed
+                    }
+
+                    if (!ensureForwardingConstructor(
+                            directSuper,
+                            call.desc,
+                            classes,
+                            constructorsToAdd,
+                        )
+                    ) {
+                        return@forEachIndexed
+                    }
+                    logger.debug {
+                        "Repairing constructor ancestor ${call.owner} -> $directSuper " +
+                            "in ${classNode.name}${constructor.desc}"
+                    }
+                    call.owner = directSuper
+                }
+            }
+    }
+
+    private fun ensureForwardingConstructor(
+        className: String,
+        descriptor: String,
+        classes: Map<String, Pair<String, ClassNode>>,
+        constructorsToAdd: MutableMap<String, MutableMap<String, String>>,
+        visited: MutableSet<String> = mutableSetOf(),
+    ): Boolean {
+        if (!visited.add(className)) return false
+        val classNode = classes[className]?.second ?: return false
+        if (classNode.access and Opcodes.ACC_INTERFACE != 0) return false
+        if (classNode.methods.any { it.name == "<init>" && it.desc == descriptor } ||
+            constructorsToAdd[className]?.containsKey(descriptor) == true
+        ) {
+            return true
+        }
+        val superName = classNode.superName ?: return false
+        val superClass = classes[superName]?.second
+        if (superClass != null &&
+            superClass.methods.none { it.name == "<init>" && it.desc == descriptor } &&
+            constructorsToAdd[superName]?.containsKey(descriptor) != true &&
+            !ensureForwardingConstructor(
+                superName,
+                descriptor,
+                classes,
+                constructorsToAdd,
+                visited,
+            )
+        ) {
+            return false
+        }
+        constructorsToAdd.getOrPut(className, ::mutableMapOf)[descriptor] = superName
+        return true
+    }
+
+    private fun isAncestor(
+        className: String,
+        possibleAncestor: String,
+        classes: Map<String, Pair<String, ClassNode>>,
+    ): Boolean {
+        var current: String? = className
+        val visited = mutableSetOf<String>()
+        while (current != null && visited.add(current)) {
+            if (current == possibleAncestor) return true
+            current = classes[current]?.second?.superName ?: readClassNode(current)?.superName
+        }
+        return false
     }
 
     private fun findMatchingConstructor(

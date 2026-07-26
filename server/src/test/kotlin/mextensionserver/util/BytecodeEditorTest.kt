@@ -89,6 +89,26 @@ class BytecodeEditorTest {
     }
 
     @Test
+    fun `repairs constructor calls that skip an abstract superclass`() {
+        val jar = Files.createTempFile("mextension-bytecode-ancestor-constructor", ".jar")
+        try {
+            JarOutputStream(Files.newOutputStream(jar)).use { output ->
+                output.writeClass(EMPTY_ABSTRACT_CLASS, emptyAbstractClass())
+                output.writeClass(ANCESTOR_CALL_CLASS, ancestorCallClass())
+            }
+
+            BytecodeEditor.fixAndroidClasses(jar)
+
+            URLClassLoader(arrayOf(jar.toUri().toURL()), javaClass.classLoader).use { loader ->
+                val repaired = loader.loadClass(ANCESTOR_CALL_CLASS.replace('/', '.'))
+                assertEquals(repaired, repaired.getConstructor().newInstance().javaClass)
+            }
+        } finally {
+            Files.deleteIfExists(jar)
+        }
+    }
+
+    @Test
     fun `repairs sole exception subclass allocation before throw`() {
         val jar = Files.createTempFile("mextension-bytecode-exception", ".jar")
         try {
@@ -359,6 +379,42 @@ class BytecodeEditorTest {
         return writer.toByteArray()
     }
 
+    private fun emptyAbstractClass(): ByteArray {
+        val writer = ClassWriter(0)
+        writer.visit(
+            Opcodes.V1_8,
+            Opcodes.ACC_PUBLIC or Opcodes.ACC_ABSTRACT or Opcodes.ACC_SUPER,
+            EMPTY_ABSTRACT_CLASS,
+            null,
+            "java/lang/Object",
+            null,
+        )
+        writer.visitEnd()
+        return writer.toByteArray()
+    }
+
+    private fun ancestorCallClass(): ByteArray {
+        val writer = ClassWriter(0)
+        writer.visit(
+            Opcodes.V1_8,
+            Opcodes.ACC_PUBLIC or Opcodes.ACC_FINAL or Opcodes.ACC_SUPER,
+            ANCESTOR_CALL_CLASS,
+            null,
+            EMPTY_ABSTRACT_CLASS,
+            null,
+        )
+        writer.visitMethod(Opcodes.ACC_PUBLIC, "<init>", "()V", null, null).apply {
+            visitCode()
+            visitVarInsn(Opcodes.ALOAD, 0)
+            visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false)
+            visitInsn(Opcodes.RETURN)
+            visitMaxs(1, 1)
+            visitEnd()
+        }
+        writer.visitEnd()
+        return writer.toByteArray()
+    }
+
     private fun concreteClass(): ByteArray {
         val writer = ClassWriter(0)
         writer.visit(
@@ -577,6 +633,8 @@ class BytecodeEditorTest {
         const val ABSTRACT_CLASS = "mextensionserver/test/GeneratedAbstract"
         const val CONCRETE_CLASS = "mextensionserver/test/GeneratedConcrete"
         const val ABSTRACT_FACTORY_CLASS = "mextensionserver/test/GeneratedAbstractFactory"
+        const val EMPTY_ABSTRACT_CLASS = "mextensionserver/test/GeneratedEmptyAbstract"
+        const val ANCESTOR_CALL_CLASS = "mextensionserver/test/GeneratedAncestorCall"
         const val EXCEPTION_CLASS = "mextensionserver/test/GeneratedException"
         const val EXCEPTION_FACTORY_CLASS = "mextensionserver/test/GeneratedExceptionFactory"
         const val SERIALIZER_INTERFACE = "mextensionserver/test/GeneratedSerializer"

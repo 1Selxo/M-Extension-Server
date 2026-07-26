@@ -103,7 +103,6 @@ tasks {
                 "font/**",
                 "native/**",
                 "jni/**",
-                "r_*.ini",
                 "dev/datlag/kcef/**",
                 "org/cef/**",
                 "org/jogamp/**",
