@@ -7,7 +7,9 @@ import mextensionserver.impl.MihonImageProxy
 import mextensionserver.impl.MihonVideoProxy
 import java.io.IOException
 
-class MExtensionServerController {
+class MExtensionServerController(
+    private val bindHost: String? = null,
+) {
     private val logger = KotlinLogging.logger {}
     private var server: WebServer? = null
 
@@ -37,7 +39,7 @@ class MExtensionServerController {
 
     private inner class WebServer(
         port: Int,
-    ) : NanoHTTPD(port) {
+    ) : NanoHTTPD(bindHost, port) {
         override fun serve(session: IHTTPSession): Response =
             when (session.uri) {
                 "/dalvik" -> DalvikHandler().serve(session)

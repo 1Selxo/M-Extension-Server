@@ -26,11 +26,12 @@ import org.objectweb.asm.tree.MethodInsnNode
 import org.objectweb.asm.tree.MethodNode
 import org.objectweb.asm.tree.TypeInsnNode
 import org.objectweb.asm.tree.VarInsnNode
-import java.nio.file.FileSystems
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardOpenOption
-import kotlin.streams.asSequence
+import java.nio.file.StandardCopyOption
+import java.util.zip.ZipEntry
+import java.util.zip.ZipInputStream
+import java.util.zip.ZipOutputStream
 
 object BytecodeEditor {
     private val logger = KotlinLogging.logger {}
@@ -41,23 +42,59 @@ object BytecodeEditor {
      * @param jarFile The JarFile to replace class references in
      */
     fun fixAndroidClasses(jarFile: Path) {
-        FileSystems.newFileSystem(jarFile, null as ClassLoader?)?.use {
-            Files.walk(it.getPath("/")).use { paths ->
-                val classes =
-                    paths
-                        .asSequence()
-                        .filterNotNull()
-                        .filterNot(Files::isDirectory)
-                        .mapNotNull(::getClassBytes)
-                        .toList()
-                val repairedClasses = repairMissingConstructors(classes)
-                val hierarchy = ClassHierarchy(repairedClasses.map(Pair<Path, ByteArray>::second))
-                repairedClasses
-                    .asSequence()
-                    .map { classBytes -> transform(classBytes, hierarchy) }
-                    .forEach(::write)
+        val entries = readJarEntries(jarFile)
+        val classes =
+            entries
+                .asSequence()
+                .filterNot(JarEntryData::isDirectory)
+                .mapNotNull { getClassBytes(it.name, it.bytes) }
+                .toList()
+        val repairedClasses = repairMissingConstructors(classes)
+        val hierarchy = ClassHierarchy(repairedClasses.map(Pair<String, ByteArray>::second))
+        val transformedClasses =
+            repairedClasses
+                .asSequence()
+                .map { classBytes -> transform(classBytes, hierarchy) }
+                .toMap()
+
+        val replacement = Files.createTempFile(jarFile.parent, "mextensionserver-rewrite-", ".jar")
+        try {
+            ZipOutputStream(Files.newOutputStream(replacement).buffered()).use { output ->
+                entries.forEach { entry ->
+                    output.putNextEntry(ZipEntry(entry.name))
+                    if (!entry.isDirectory) {
+                        output.write(transformedClasses[entry.name] ?: entry.bytes)
+                    }
+                    output.closeEntry()
+                }
+            }
+            Files.move(replacement, jarFile, StandardCopyOption.REPLACE_EXISTING)
+        } finally {
+            Files.deleteIfExists(replacement)
+        }
+    }
+
+    private data class JarEntryData(
+        val name: String,
+        val bytes: ByteArray,
+        val isDirectory: Boolean,
+    )
+
+    private fun readJarEntries(jarFile: Path): List<JarEntryData> {
+        val entries = mutableListOf<JarEntryData>()
+        ZipInputStream(Files.newInputStream(jarFile).buffered()).use { input ->
+            while (true) {
+                val entry = input.nextEntry ?: break
+                entries +=
+                    JarEntryData(
+                        name = entry.name,
+                        bytes = if (entry.isDirectory) byteArrayOf() else input.readBytes(),
+                        isDirectory = entry.isDirectory,
+                    )
+                input.closeEntry()
             }
         }
+        return entries
     }
 
     /**
@@ -67,7 +104,7 @@ object BytecodeEditor {
      * from the following typed use, add the missing forwarding constructor,
      * and repair both instructions before JVM verification.
      */
-    private fun repairMissingConstructors(classes: List<Pair<Path, ByteArray>>): List<Pair<Path, ByteArray>> {
+    private fun repairMissingConstructors(classes: List<Pair<String, ByteArray>>): List<Pair<String, ByteArray>> {
         val parsed =
             classes.associate { (path, bytes) ->
                 val node = ClassNode(Opcodes.ASM9)
@@ -76,7 +113,7 @@ object BytecodeEditor {
             }
         val missingConstructors =
             parsed.values
-                .map(Pair<Path, ClassNode>::second)
+                .map(Pair<String, ClassNode>::second)
                 .filter {
                     it.superName != null &&
                         it.access and (Opcodes.ACC_ABSTRACT or Opcodes.ACC_INTERFACE) == 0 &&
@@ -105,7 +142,7 @@ object BytecodeEditor {
 
     private fun repairAllocations(
         method: MethodNode,
-        classes: Map<String, Pair<Path, ClassNode>>,
+        classes: Map<String, Pair<String, ClassNode>>,
         missingConstructors: Map<String, ClassNode>,
         constructorsToAdd: MutableMap<String, MutableMap<String, String>>,
     ) {
@@ -177,7 +214,7 @@ object BytecodeEditor {
         instructions: Array<AbstractInsnNode>,
         constructorIndex: Int,
         allocatedSuperClass: String,
-        classes: Map<String, Pair<Path, ClassNode>>,
+        classes: Map<String, Pair<String, ClassNode>>,
         missingConstructors: Map<String, ClassNode>,
     ): String? {
         val candidates = mutableSetOf<String>()
@@ -375,7 +412,7 @@ object BytecodeEditor {
     private fun isAssignableTo(
         className: String,
         target: String,
-        classes: Map<String, Pair<Path, ClassNode>>,
+        classes: Map<String, Pair<String, ClassNode>>,
         visited: MutableSet<String> = mutableSetOf(),
     ): Boolean {
         if (className == target) return true
@@ -387,7 +424,7 @@ object BytecodeEditor {
 
     private fun isAbstractOrInterface(
         className: String,
-        classes: Map<String, Pair<Path, ClassNode>>,
+        classes: Map<String, Pair<String, ClassNode>>,
     ): Boolean {
         val access = classes[className]?.second?.access ?: readClassNode(className)?.access ?: return false
         return access and (Opcodes.ACC_ABSTRACT or Opcodes.ACC_INTERFACE) != 0
@@ -548,17 +585,12 @@ object BytecodeEditor {
         }
     }
 
-    /**
-     * Get class bytes from a [Path]
-     *
-     * @param path The path entry to get the class bytes from
-     *
-     * @return [Pair] of the [Path] plus the class [ByteArray], or null if it's not a valid class
-     */
-    private fun getClassBytes(path: Path): Pair<Path, ByteArray>? {
+    private fun getClassBytes(
+        name: String,
+        bytes: ByteArray,
+    ): Pair<String, ByteArray>? {
         return try {
-            if (path.toString().endsWith(".class")) {
-                val bytes = Files.readAllBytes(path)
+            if (name.endsWith(".class")) {
                 if (bytes.size < 4) {
                     // Invalid class size
                     return null
@@ -576,12 +608,12 @@ object BytecodeEditor {
                     return null
                 }
 
-                path to bytes
+                name to bytes
             } else {
                 null
             }
         } catch (e: Exception) {
-            logger.error(e) { "Error loading class from Path: $path" }
+            logger.error(e) { "Error loading class from JAR entry: $name" }
             null
         }
     }
@@ -636,9 +668,9 @@ object BytecodeEditor {
      * @return [ByteArray] with modified bytecode
      */
     private fun transform(
-        pair: Pair<Path, ByteArray>,
+        pair: Pair<String, ByteArray>,
         hierarchy: ClassHierarchy,
-    ): Pair<Path, ByteArray> {
+    ): Pair<String, ByteArray> {
         // Read the class and prepare to modify it
         val cr = ClassReader(pair.second)
         // dex2jar can emit stale stack-map frames for obfuscated Kotlin default
@@ -789,14 +821,5 @@ object BytecodeEditor {
             ClassReader.EXPAND_FRAMES,
         )
         return pair.first to cw.toByteArray()
-    }
-
-    private fun write(pair: Pair<Path, ByteArray>) {
-        Files.write(
-            pair.first,
-            pair.second,
-            StandardOpenOption.CREATE,
-            StandardOpenOption.TRUNCATE_EXISTING,
-        )
     }
 }

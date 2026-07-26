@@ -4,6 +4,8 @@ import org.jmailen.gradle.kotlinter.tasks.FormatTask
 import org.jmailen.gradle.kotlinter.tasks.LintTask
 import java.io.BufferedReader
 
+val iosRuntime = providers.gradleProperty("iosRuntime").map(String::toBoolean).getOrElse(false)
+
 plugins {
     application
     alias(libs.plugins.kotlin.jvm)
@@ -17,6 +19,9 @@ dependencies {
     implementation(libs.bundles.okhttp)
     implementation(libs.icu4j.charset)
     implementation(libs.quickjs4j)
+    if (iosRuntime) {
+        runtimeOnly(libs.slf4jsimple)
+    }
     testImplementation(kotlin("test"))
 
     // AndroidCompat
@@ -86,6 +91,28 @@ tasks {
         archiveBaseName.set(rootProject.name)
         archiveVersion.set(m_extension_serverVersion)
         archiveClassifier.set(m_extension_serverRevision)
+        if (iosRuntime) {
+            dependencies {
+                exclude(dependency("ch.qos.logback:logback-classic:.*"))
+                exclude(dependency("ch.qos.logback:logback-core:.*"))
+            }
+            exclude(
+                "AndroidManifest.xml",
+                "resources.arsc",
+                "res/**",
+                "font/**",
+                "native/**",
+                "jni/**",
+                "r_*.ini",
+                "dev/datlag/kcef/**",
+                "org/cef/**",
+                "org/jogamp/**",
+                "com/jogamp/**",
+                "jogamp/**",
+                "com/sun/jna/**",
+            )
+            mergeServiceFiles()
+        }
     }
 
     withType<KotlinCompile> {
