@@ -57,7 +57,21 @@ class MihonImageProxyTest {
         assertEquals(source.resolvedImageUrl, page.imageUrl)
     }
 
-    private class TestHttpSource : HttpSource() {
+    @Test
+    fun `resolves missing image urls through native 1_6 API`() {
+        val source = NativeImageUrlHttpSource()
+        val page = Page(0, url = "/reader-page")
+        MihonImageProxy.configure(39641)
+
+        val proxyUrl = requireNotNull(MihonImageProxy.register(source, page))
+        val token = URI(proxyUrl).path.substringAfterLast('/')
+        MihonImageProxy.fetch(token)
+
+        assertEquals(1, source.imageUrlFetches)
+        assertEquals(source.resolvedImageUrl, page.imageUrl)
+    }
+
+    private open class TestHttpSource : HttpSource() {
         val imageBytes = byteArrayOf(0xff.toByte(), 0xd8.toByte(), 0xff.toByte(), 0xd9.toByte())
         val resolvedImageUrl = "https://example.test/resolved.jpg"
         var seenFragment: String? = null
@@ -114,5 +128,14 @@ class MihonImageProxyTest {
         override fun imageUrlParse(response: Response): String = unused()
 
         private fun unused(): Nothing = error("Not used by this test")
+    }
+
+    private class NativeImageUrlHttpSource : TestHttpSource() {
+        override suspend fun getImageUrl(page: Page): String {
+            imageUrlFetches++
+            return resolvedImageUrl
+        }
+
+        override fun fetchImageUrl(page: Page): Observable<String> = error("The bridge must use getImageUrl")
     }
 }

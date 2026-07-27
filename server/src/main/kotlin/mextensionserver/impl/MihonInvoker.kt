@@ -16,7 +16,7 @@ import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
-import eu.kanade.tachiyomi.source.CatalogueSource
+import eu.kanade.tachiyomi.source.Source
 import eu.kanade.tachiyomi.source.model.Filter
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.SChapter
@@ -59,19 +59,19 @@ object MihonInvoker {
         preparePreferences(data, source)
 
         return when (data.method) {
-            "headersManga" -> invokeHeadersManga(source as CatalogueSource)
-            "filtersManga" -> invokeFiltersManga(source as CatalogueSource)
-            "supportLatestManga" -> invokeSupportLatestManga(source as CatalogueSource)
-            "getPopularManga" -> invokeGetPopularManga(source as CatalogueSource, data.page ?: 1)
-            "getLatestManga" -> invokeGetLatestManga(source as CatalogueSource, data.page ?: 1)
-            "getSearchManga" -> invokeGetSearchManga(source as CatalogueSource, data.page ?: 1, data.search ?: "", data.filterList)
-            "getDetailsManga" -> invokeGetDetailsManga(source as CatalogueSource, data.mangaData)
-            "getMangaUrl" -> invokeGetMangaUrl(source as CatalogueSource, data.mangaData)
-            "getChapterList" -> invokeGetChapterList(source as CatalogueSource, data.mangaData)
-            "getChapterUrl" -> invokeGetChapterUrl(source as CatalogueSource, data.chapterData)
-            "getPageList" -> invokeGetPageList(source as CatalogueSource, data.chapterData)
-            "preferencesManga" -> invokePreferencesManga(source as CatalogueSource)
-            "setPreferenceManga" -> invokeSetPreferenceManga(source as CatalogueSource, data)
+            "headersManga" -> invokeHeadersManga(source as Source)
+            "filtersManga" -> invokeFiltersManga(source as Source)
+            "supportLatestManga" -> invokeSupportLatestManga(source as Source)
+            "getPopularManga" -> invokeGetPopularManga(source as Source, data.page ?: 1)
+            "getLatestManga" -> invokeGetLatestManga(source as Source, data.page ?: 1)
+            "getSearchManga" -> invokeGetSearchManga(source as Source, data.page ?: 1, data.search ?: "", data.filterList)
+            "getDetailsManga" -> invokeGetDetailsManga(source as Source, data.mangaData)
+            "getMangaUrl" -> invokeGetMangaUrl(source as Source, data.mangaData)
+            "getChapterList" -> invokeGetChapterList(source as Source, data.mangaData)
+            "getChapterUrl" -> invokeGetChapterUrl(source as Source, data.chapterData)
+            "getPageList" -> invokeGetPageList(source as Source, data.chapterData)
+            "preferencesManga" -> invokePreferencesManga(source as Source)
+            "setPreferenceManga" -> invokeSetPreferenceManga(source as Source, data)
             "headersAnime" -> invokeHeadersAnime(source as AnimeCatalogueSource)
             "filtersAnime" -> invokeFiltersAnime(source as AnimeCatalogueSource)
             "supportLatestAnime" -> invokeSupportLatestAnime(source as AnimeCatalogueSource)
@@ -105,26 +105,24 @@ object MihonInvoker {
 
     private fun sourceId(source: Any): String =
         when (source) {
-            is eu.kanade.tachiyomi.source.Source -> source.id.toString()
+            is Source -> source.id.toString()
             is eu.kanade.tachiyomi.animesource.AnimeSource -> source.id.toString()
             else -> throw IllegalArgumentException("Unknown source type: ${source.javaClass}")
         }
 
     private fun sourceDescriptor(source: Any): Map<String, String> =
         when (source) {
-            is eu.kanade.tachiyomi.source.Source ->
+            is Source ->
                 mapOf(
                     "id" to source.id.toString(),
                     "name" to source.name,
                     "lang" to source.lang,
                     "baseUrl" to
-                        runCatching {
-                            source.javaClass
-                                .getMethod("getBaseUrl")
-                                .invoke(source)
-                                ?.toString()
-                                .orEmpty()
-                        }.getOrDefault(""),
+                        if (source is HttpSource) {
+                            runCatching(source::getHomeUrl).getOrDefault(source.baseUrl)
+                        } else {
+                            ""
+                        },
                 )
             is eu.kanade.tachiyomi.animesource.AnimeSource ->
                 mapOf(
@@ -161,7 +159,7 @@ object MihonInvoker {
         applyPreferences(data, source, skipPreferenceKey = changedKey)
     }
 
-    private fun invokeHeadersManga(source: CatalogueSource): List<String> =
+    private fun invokeHeadersManga(source: Source): List<String> =
         if (source is HttpSource) {
             val headers =
                 source.headers.toMultimap().flatMap { (name, values) ->
@@ -174,39 +172,47 @@ object MihonInvoker {
             emptyList()
         }
 
-    private fun invokeFiltersManga(source: CatalogueSource): FilterList {
+    private fun invokeFiltersManga(source: Source): FilterList {
         val filterList = source.getFilterList()
         return filterList
     }
 
-    private fun invokeSupportLatestManga(source: CatalogueSource): Boolean = source.supportsLatest
+    private fun invokeSupportLatestManga(source: Source): Boolean = source.supportsLatest
 
     private fun invokeGetPopularManga(
-        source: CatalogueSource,
+        source: Source,
         page: Int,
     ): MangaResponse =
         runBlocking {
             val mangasPage = source.getPopularManga(page)
             MangaResponse(
-                mangas = mangasPage.mangas.map { it.toJManga() },
+                mangas =
+                    mangasPage.mangas.map { manga ->
+                        MihonMetadataCache.remember(source, manga)
+                        manga.toJManga()
+                    },
                 hasNextPage = mangasPage.hasNextPage,
             )
         }
 
     private fun invokeGetLatestManga(
-        source: CatalogueSource,
+        source: Source,
         page: Int,
     ): MangaResponse =
         runBlocking {
             val mangasPage = source.getLatestUpdates(page)
             MangaResponse(
-                mangas = mangasPage.mangas.map { it.toJManga() },
+                mangas =
+                    mangasPage.mangas.map { manga ->
+                        MihonMetadataCache.remember(source, manga)
+                        manga.toJManga()
+                    },
                 hasNextPage = mangasPage.hasNextPage,
             )
         }
 
     private fun invokeGetSearchManga(
-        source: CatalogueSource,
+        source: Source,
         page: Int,
         search: String,
         filterList: List<JFilterList>?,
@@ -215,31 +221,39 @@ object MihonInvoker {
             val convertedFilters = filterList?.let { convertFilterList(source.getFilterList(), it) } ?: source.getFilterList()
             val mangasPage = source.getSearchManga(page, search, convertedFilters)
             MangaResponse(
-                mangas = mangasPage.mangas.map { it.toJManga() },
+                mangas =
+                    mangasPage.mangas.map { manga ->
+                        MihonMetadataCache.remember(source, manga)
+                        manga.toJManga()
+                    },
                 hasNextPage = mangasPage.hasNextPage,
             )
         }
 
     private fun invokeGetDetailsManga(
-        source: CatalogueSource,
+        source: Source,
         mangaData: MangaData?,
     ): JManga {
         if (mangaData == null) {
             throw IllegalArgumentException("mangaData is required for getDetailsManga")
         }
 
-        if (source !is HttpSource) {
-            throw IllegalArgumentException("Source must be HttpSource for getDetailsManga")
-        }
-
         return runBlocking {
-            val detailedManga = source.getMangaDetails(mangaData.toSManga())
+            val detailedManga =
+                source
+                    .getMangaUpdate(
+                        manga = mangaData.toSManga(source),
+                        chapters = emptyList(),
+                        fetchDetails = true,
+                        fetchChapters = false,
+                    ).manga
+            MihonMetadataCache.remember(source, detailedManga)
             detailedManga.toJManga()
         }
     }
 
     private fun invokeGetMangaUrl(
-        source: CatalogueSource,
+        source: Source,
         mangaData: MangaData?,
     ): String {
         if (mangaData == null) {
@@ -248,29 +262,32 @@ object MihonInvoker {
         if (source !is HttpSource) {
             throw IllegalArgumentException("Source must be HttpSource for getMangaUrl")
         }
-        return source.getMangaUrl(mangaData.toSManga())
+        return source.getMangaUrl(mangaData.toSManga(source))
     }
 
     private fun invokeGetChapterList(
-        source: CatalogueSource,
+        source: Source,
         mangaData: MangaData?,
     ): List<SChapter> {
         if (mangaData == null) {
             throw IllegalArgumentException("mangaData is required for getChapterList")
         }
 
-        if (source !is HttpSource) {
-            throw IllegalArgumentException("Source must be HttpSource for getChapterList")
-        }
-
         return runBlocking {
-            val chapters = source.getChapterList(mangaData.toSManga())
-            chapters
+            val chapters =
+                source
+                    .getMangaUpdate(
+                        manga = mangaData.toSManga(source),
+                        chapters = emptyList(),
+                        fetchDetails = false,
+                        fetchChapters = true,
+                    ).chapters
+            chapters.onEach { chapter -> MihonMetadataCache.remember(source, chapter) }
         }
     }
 
     private fun invokeGetChapterUrl(
-        source: CatalogueSource,
+        source: Source,
         chapterData: ChapterData?,
     ): String {
         if (chapterData == null) {
@@ -279,30 +296,35 @@ object MihonInvoker {
         if (source !is HttpSource) {
             throw IllegalArgumentException("Source must be HttpSource for getChapterUrl")
         }
-        return source.getChapterUrl(chapterData.toSChapter())
+        return source.getChapterUrl(chapterData.toSChapter(source))
     }
 
     private fun invokeGetPageList(
-        source: CatalogueSource,
+        source: Source,
         chapterData: ChapterData?,
     ): List<JPage> {
         if (chapterData == null) {
             throw IllegalArgumentException("chapterData is required for getPageList")
         }
 
-        if (source !is HttpSource) {
-            throw IllegalArgumentException("Source must be HttpSource for getPageList")
-        }
-
         return runBlocking {
-            val pages = source.getPageList(chapterData.toSChapter())
+            val pages = source.getPageList(chapterData.toSChapter(source))
             pages.map { page ->
                 JPage(
                     index = page.index,
                     url = page.url,
                     imageUrl =
-                        MihonImageProxy.register(source, page)
-                            ?: source.imageRequest(page).url.toString(),
+                        if (source is HttpSource) {
+                            MihonImageProxy.register(source, page)
+                                ?: run {
+                                    if (page.imageUrl == null) {
+                                        page.imageUrl = source.getImageUrl(page)
+                                    }
+                                    source.imageRequest(page).url.toString()
+                                }
+                        } else {
+                            page.imageUrl ?: page.url
+                        },
                 )
             }
         }
@@ -447,7 +469,7 @@ object MihonInvoker {
         }
     }
 
-    private fun MangaData.toSManga(): SManga =
+    private fun MangaData.toSManga(source: Source): SManga =
         SManga.create().also { manga ->
             manga.url = url ?: ""
             manga.title = title ?: ""
@@ -458,15 +480,17 @@ object MihonInvoker {
             manga.status = status ?: 0
             manga.thumbnail_url = thumbnail_url
             manga.initialized = initialized ?: false
+            MihonMetadataCache.restore(source, manga)
         }
 
-    private fun ChapterData.toSChapter(): SChapter =
+    private fun ChapterData.toSChapter(source: Source): SChapter =
         SChapter.create().also { chapter ->
             chapter.url = url ?: ""
             chapter.name = name ?: ""
             chapter.date_upload = date_upload ?: 0L
             chapter.chapter_number = chapter_number ?: 0f
             chapter.scanlator = scanlator
+            MihonMetadataCache.restore(source, chapter)
         }
 
     private fun AnimeData.toSAnime(): SAnime =
@@ -509,14 +533,14 @@ object MihonInvoker {
         return preferences
     }
 
-    private fun invokePreferencesManga(source: CatalogueSource): MutableList<Map<String, Any>> {
+    private fun invokePreferencesManga(source: Source): MutableList<Map<String, Any>> {
         val preferences = mutableListOf<Map<String, Any>>()
         if (source !is eu.kanade.tachiyomi.source.ConfigurableSource) {
             return preferences
         }
 
         val screen = PreferenceScreen(context)
-        val sourceId = (source as eu.kanade.tachiyomi.source.Source).id
+        val sourceId = source.id
         val prefs = context.getSharedPreferences("source_$sourceId", 0)
         screen.setSharedPreferences(prefs)
 
@@ -536,7 +560,7 @@ object MihonInvoker {
     }
 
     private fun invokeSetPreferenceManga(
-        source: CatalogueSource,
+        source: Source,
         data: DataBody,
     ): MutableList<Map<String, Any>> {
         if (source !is eu.kanade.tachiyomi.source.ConfigurableSource) return mutableListOf()

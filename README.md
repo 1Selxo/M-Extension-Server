@@ -9,6 +9,10 @@ factory-created sources and live extension preferences. A compatible server
 advertises `mangatanMihonBridge`, `sourceFactory`, `preferenceCallbacks`,
 `sourceUrls`, and `imageProxy` from `GET /capabilities`.
 
+The manga bridge implements the TachiyomiX 1.6 source API, including combined
+manga updates, source memo metadata, and suspend image URL resolution. Legacy
+RxJava extensions continue to work through compatibility fallbacks.
+
 ## Credits
 
 The `AndroidCompat` module was originally developed by [@null-dev](https://github.com/null-dev) for [TachiWeb-Server](https://github.com/Tachiweb/TachiWeb-server) and is licensed under `Apache License Version 2.0`.
