@@ -2,6 +2,7 @@ package mextensionserver.impl
 
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.online.HttpSource
+import kotlinx.coroutines.runBlocking
 import java.util.UUID
 
 /**
@@ -81,10 +82,9 @@ internal object MihonImageProxy {
         val entry = synchronized(lock) { entriesByToken[token] } ?: return null
         if (entry.page.imageUrl == null) {
             entry.page.imageUrl =
-                entry.source
-                    .fetchImageUrl(entry.page)
-                    .toBlocking()
-                    .single()
+                runBlocking {
+                    entry.source.getImageUrl(entry.page)
+                }
         }
         return entry.source.fetchImage(entry.page).toBlocking().single().use { response ->
             val body = requireNotNull(response.body) { "Extension returned an empty image response" }
