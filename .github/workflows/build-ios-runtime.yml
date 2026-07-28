@@ -18,7 +18,7 @@ permissions:
   contents: write
 
 env:
-  RUNTIME_RELEASE_TAG: ios-runtime-v2
+  RUNTIME_RELEASE_TAG: ios-runtime-v3
 
 jobs:
   build:
@@ -100,7 +100,7 @@ jobs:
         with:
           tag_name: ${{ env.RUNTIME_RELEASE_TAG }}
           target_commitish: ${{ github.sha }}
-          name: M-Extension-Server embedded iOS runtime v2
+          name: M-Extension-Server embedded iOS runtime v3
           body: |
             Headless ShadowJar for Mangatan's on-device iOS Mihon bridge.
 

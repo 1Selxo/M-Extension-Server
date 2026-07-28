@@ -37,6 +37,8 @@ class EmbeddedBridgeTest {
 
             EmbeddedBridge.stop()
             assertFalse(EmbeddedBridge.isRunning())
+            assertEquals(port, EmbeddedBridge.start(port, appDir.toString()))
+            assertTrue(EmbeddedBridge.isRunning())
         } finally {
             appDir.deleteRecursively()
         }
