@@ -18,7 +18,7 @@ permissions:
   contents: write
 
 env:
-  RUNTIME_RELEASE_TAG: ios-runtime-v3
+  RUNTIME_RELEASE_TAG: ios-runtime-v4
   GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx2g
 
 jobs:
@@ -102,12 +102,14 @@ jobs:
         with:
           tag_name: ${{ env.RUNTIME_RELEASE_TAG }}
           target_commitish: ${{ github.sha }}
-          name: M-Extension-Server embedded iOS runtime v3
+          name: M-Extension-Server embedded iOS runtime v4
           body: |
             Headless ShadowJar for Mangatan's on-device iOS Mihon bridge.
 
             The JAR excludes desktop Chromium/JCEF dependencies and includes a
             bytecode toolchain compatible with the pinned OpenJDK iOS runtime.
+            Its default OkHttp client matches the current Mihon extension
+            contract, including MangaFire 1.6.27.
           files: |
             release/MExtensionServer-ios.jar
             release/SHA256SUMS

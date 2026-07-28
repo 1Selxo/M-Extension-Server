@@ -10,13 +10,10 @@ package eu.kanade.tachiyomi.network
 
 import android.content.Context
 import eu.kanade.tachiyomi.network.interceptor.CloudflareInterceptor
-import eu.kanade.tachiyomi.network.interceptor.IgnoreGzipInterceptor
-import eu.kanade.tachiyomi.network.interceptor.MangaFireProtectionInterceptor
 import eu.kanade.tachiyomi.network.interceptor.UncaughtExceptionInterceptor
 import eu.kanade.tachiyomi.network.interceptor.UserAgentInterceptor
 import okhttp3.Cache
 import okhttp3.OkHttpClient
-import okhttp3.brotli.BrotliInterceptor
 import java.nio.file.Files
 import java.util.concurrent.TimeUnit
 
@@ -33,9 +30,6 @@ class NetworkHelper(
                 .addInterceptor(UncaughtExceptionInterceptor())
                 .addInterceptor(UserAgentInterceptor(::defaultUserAgentProvider))
                 .addInterceptor(CloudflareInterceptor())
-                .addInterceptor(MangaFireProtectionInterceptor())
-                .addNetworkInterceptor(IgnoreGzipInterceptor())
-                .addNetworkInterceptor(BrotliInterceptor)
                 .connectTimeout(30, TimeUnit.SECONDS)
                 .readTimeout(30, TimeUnit.SECONDS)
                 .callTimeout(2, TimeUnit.MINUTES)
