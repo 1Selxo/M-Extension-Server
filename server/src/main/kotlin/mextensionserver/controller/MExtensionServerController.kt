@@ -6,32 +6,16 @@ import mextensionserver.impl.MExtensionServerLoader
 import mextensionserver.impl.MihonImageProxy
 import mextensionserver.impl.MihonVideoProxy
 import java.io.IOException
-import java.net.ServerSocket
 
 class MExtensionServerController(
     private val bindHost: String? = null,
 ) {
-    companion object {
-        private const val ACCEPT_TIMEOUT_MS = 1_000
-    }
-
     private val logger = KotlinLogging.logger {}
     private var server: WebServer? = null
 
     fun start(port: Int) {
         try {
-            server =
-                WebServer(port).apply {
-                    // A blocking accept in the iOS OpenJDK port can spin after
-                    // the app is suspended and resumed. A bounded accept uses
-                    // the JDK poll path instead, preventing a stale socket from
-                    // consuming an entire CPU core.
-                    setServerSocketFactory {
-                        ServerSocket().apply {
-                            soTimeout = ACCEPT_TIMEOUT_MS
-                        }
-                    }
-                }
+            server = WebServer(port)
             server?.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false)
             val actualPort = server?.listeningPort ?: 0
             MihonImageProxy.configure(actualPort)
