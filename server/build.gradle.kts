@@ -17,6 +17,7 @@ plugins {
 
 dependencies {
     implementation(libs.bundles.okhttp)
+    implementation(libs.bundles.asm)
     implementation(libs.icu4j.charset)
     implementation(libs.quickjs4j)
     if (iosRuntime) {

@@ -5,6 +5,7 @@ serialization = "1.9.0"
 okhttp = "5.3.2" # Major version is locked by Tachiyomi extensions
 jackson = "2.18.3" # jackson version locked by javalin, ref: `io.javalin.core.util.OptionalDependency`
 dex2jar = "2.4.33"
+asm = "9.10.1"
 settings = "1.3.0"
 twelvemonkeys = "3.12.0"
 
@@ -59,6 +60,10 @@ android-stubs = "com.github.Suwayomi:android-jar:1.0.0"
 # Asm modificiation
 dex2jar-translator = { module = "de.femtopedia.dex2jar:dex-translator", version.ref = "dex2jar" }
 dex2jar-tools = { module = "de.femtopedia.dex2jar:dex-tools", version.ref = "dex2jar" }
+asm-core = { module = "org.ow2.asm:asm", version.ref = "asm" }
+asm-tree = { module = "org.ow2.asm:asm-tree", version.ref = "asm" }
+asm-commons = { module = "org.ow2.asm:asm-commons", version.ref = "asm" }
+asm-util = { module = "org.ow2.asm:asm-util", version.ref = "asm" }
 
 # APK
 apk-parser = "net.dongliu:apk-parser:2.6.10"
@@ -126,6 +131,13 @@ buildconfig = { id = "com.github.gmazzo.buildconfig", version = "6.0.6"}
 shadowjar = { id = "com.gradleup.shadow", version = "8.3.9"}
 
 [bundles]
+asm = [
+    "asm-core",
+    "asm-tree",
+    "asm-commons",
+    "asm-util",
+]
+
 shared = [
     "kotlin-stdlib-jdk8",
     "kotlin-reflect",

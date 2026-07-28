@@ -1,5 +1,6 @@
 package mextensionserver.util
 
+import org.objectweb.asm.ClassReader
 import org.objectweb.asm.ClassWriter
 import org.objectweb.asm.Label
 import org.objectweb.asm.Opcodes
@@ -12,6 +13,24 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class BytecodeEditorTest {
+    @Test
+    fun `reads OpenJDK 27 class hierarchy`() {
+        val writer = ClassWriter(0)
+        writer.visit(
+            71,
+            Opcodes.ACC_PUBLIC or Opcodes.ACC_SUPER,
+            "example/OpenJdk27Class",
+            null,
+            "java/lang/Object",
+            null,
+        )
+        writer.visitEnd()
+
+        val reader = ClassReader(writer.toByteArray())
+
+        assertEquals(71, reader.readUnsignedShort(6))
+    }
+
     @Test
     fun `repairs dex2jar superclass allocations and frames`() {
         val jar = Files.createTempFile("mextension-bytecode-editor", ".jar")
