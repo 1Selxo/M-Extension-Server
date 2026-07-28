@@ -19,6 +19,7 @@ permissions:
 
 env:
   RUNTIME_RELEASE_TAG: ios-runtime-v3
+  GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx2g
 
 jobs:
   build:
@@ -44,6 +45,7 @@ jobs:
             :server:shadowJar \
             -PiosRuntime=true \
             --no-daemon \
+            --max-workers=2 \
             --stacktrace
 
       - name: Verify and package runtime
