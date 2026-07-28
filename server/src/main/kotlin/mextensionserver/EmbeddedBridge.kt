@@ -31,12 +31,20 @@ object EmbeddedBridge {
         }
 
     @JvmStatic
-    fun stop() {
+    fun pause() {
         synchronized(lock) {
             // The host process keeps the JVM alive. Preserve loaded extension
             // instances across iOS background/resume cycles; the JVM shutdown
             // hook still performs full cleanup when the process exits.
             controller?.pause()
+            controller = null
+        }
+    }
+
+    @JvmStatic
+    fun stop() {
+        synchronized(lock) {
+            controller?.stop()
             controller = null
         }
     }
