@@ -33,6 +33,24 @@ class ExtensionInstanceCacheTest {
     }
 
     @Test
+    fun `reuses an extension by its issued key`() {
+        val cache =
+            ExtensionInstanceCache(
+                keyOf = ByteArray::contentToString,
+                load = { MutableExtension() },
+                dispose = {},
+            )
+
+        val first = cache.useAndGetKey(byteArrayOf(1)) { extension -> ++extension.page }
+        val second = cache.useByKey(first.key) { extension -> ++extension.page }
+
+        assertEquals(1, first.value)
+        assertEquals(2, second?.value)
+        assertEquals(null, cache.useByKey("missing") { extension -> ++extension.page })
+        cache.close()
+    }
+
+    @Test
     fun `serializes calls to one extension instance`() {
         val activeCalls = AtomicInteger()
         val maxActiveCalls = AtomicInteger()

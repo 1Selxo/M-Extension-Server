@@ -25,6 +25,10 @@ import javax.swing.SwingUtilities
 
 private val logger = KotlinLogging.logger {}
 private val androidCompat by lazy { AndroidCompat() }
+private val applicationInitLock = Any()
+
+@Volatile
+private var applicationInitialized = false
 
 @Suppress("BlockingMethodInNonBlockingContext")
 fun main(args: Array<String>) {
@@ -39,7 +43,6 @@ fun main(args: Array<String>) {
         System.setProperty("apple.laf.useScreenMenuBar", "true")
     }
 
-    CookieHandler.setDefault(CookieManager())
     initApplication(appDir)
 
     if (useUI) {
@@ -57,20 +60,26 @@ fun main(args: Array<String>) {
     }
 }
 
-private fun initApplication(appDir: String?) {
-    logger.info("Running MExtensionServer ${BuildConfig.VERSION} revision ${BuildConfig.REVISION}")
+internal fun initApplication(appDir: String?) {
+    synchronized(applicationInitLock) {
+        if (applicationInitialized) return
 
-    // Set custom app directory if provided
-    appDir?.let { System.setProperty("ts.server.rootDir", it) }
+        logger.info("Running MExtensionServer ${BuildConfig.VERSION} revision ${BuildConfig.REVISION}")
 
-    startMainLooper()
+        // Set custom app directory if provided
+        appDir?.let { System.setProperty("ts.server.rootDir", it) }
+        CookieHandler.setDefault(CookieManager())
 
-    // Load config API
-    DI.global.addImport(ConfigKodeinModule().create())
-    // Load Android compatibility dependencies
-    AndroidCompatInitializer().init()
-    // start app
-    androidCompat.startApp(App())
+        startMainLooper()
+
+        // Load config API
+        DI.global.addImport(ConfigKodeinModule().create())
+        // Load Android compatibility dependencies
+        AndroidCompatInitializer().init()
+        // start app
+        androidCompat.startApp(App())
+        applicationInitialized = true
+    }
 }
 
 private fun startMainLooper() {

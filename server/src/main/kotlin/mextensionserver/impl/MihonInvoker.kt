@@ -26,16 +26,19 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.runBlocking
 import mextensionserver.model.AnimeData
 import mextensionserver.model.AnimeResponse
+import mextensionserver.model.BridgeMemo
 import mextensionserver.model.ChapterData
 import mextensionserver.model.DataBody
 import mextensionserver.model.EpisodeData
 import mextensionserver.model.JAnime
+import mextensionserver.model.JChapter
 import mextensionserver.model.JFilterList
 import mextensionserver.model.JManga
 import mextensionserver.model.JPage
 import mextensionserver.model.MangaData
 import mextensionserver.model.MangaResponse
 import mextensionserver.model.toJAnime
+import mextensionserver.model.toJChapter
 import mextensionserver.model.toJManga
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
@@ -43,6 +46,7 @@ import uy.kohesive.injekt.api.get
 object MihonInvoker {
     private val logger = KotlinLogging.logger {}
     private const val BRIDGE_CONTEXT_KEY = "__mangatan_bridge_context__"
+    private const val KL_RAW_SOURCE_ID = "7433897302034602657"
     private val context: Application
         get() = Injekt.get()
 
@@ -57,6 +61,10 @@ object MihonInvoker {
         val source = selectSource(loadedExtension.sources, data)
 
         preparePreferences(data, source)
+
+        if (UniqueStreamCompat.supports(source, data.method)) {
+            return UniqueStreamCompat.invoke(source as AnimeHttpSource, data)
+        }
 
         return when (data.method) {
             "headersManga" -> invokeHeadersManga(source as Source)
@@ -189,7 +197,7 @@ object MihonInvoker {
                 mangas =
                     mangasPage.mangas.map { manga ->
                         MihonMetadataCache.remember(source, manga)
-                        manga.toJManga()
+                        bridgeManga(source, manga)
                     },
                 hasNextPage = mangasPage.hasNextPage,
             )
@@ -200,12 +208,17 @@ object MihonInvoker {
         page: Int,
     ): MangaResponse =
         runBlocking {
-            val mangasPage = source.getLatestUpdates(page)
+            val mangasPage =
+                if (source.supportsLatest) {
+                    source.getLatestUpdates(page)
+                } else {
+                    source.getPopularManga(page)
+                }
             MangaResponse(
                 mangas =
                     mangasPage.mangas.map { manga ->
                         MihonMetadataCache.remember(source, manga)
-                        manga.toJManga()
+                        bridgeManga(source, manga)
                     },
                 hasNextPage = mangasPage.hasNextPage,
             )
@@ -224,7 +237,7 @@ object MihonInvoker {
                 mangas =
                     mangasPage.mangas.map { manga ->
                         MihonMetadataCache.remember(source, manga)
-                        manga.toJManga()
+                        bridgeManga(source, manga)
                     },
                 hasNextPage = mangasPage.hasNextPage,
             )
@@ -248,8 +261,23 @@ object MihonInvoker {
                         fetchChapters = false,
                     ).manga
             MihonMetadataCache.remember(source, detailedManga)
-            detailedManga.toJManga()
+            bridgeManga(source, detailedManga)
         }
+    }
+
+    private fun bridgeManga(
+        source: Source,
+        manga: SManga,
+    ): JManga {
+        val converted = manga.toJManga()
+        if (source !is HttpSource || source.id.toString() != KL_RAW_SOURCE_ID) return converted
+
+        val thumbnailUrl = converted.thumbnail_url?.takeIf(String::isNotBlank) ?: return converted
+        return converted.copy(
+            thumbnail_url =
+                MihonImageProxy.registerPoster(source, converted.title, thumbnailUrl)
+                    ?: thumbnailUrl,
+        )
     }
 
     private fun invokeGetMangaUrl(
@@ -268,7 +296,7 @@ object MihonInvoker {
     private fun invokeGetChapterList(
         source: Source,
         mangaData: MangaData?,
-    ): List<SChapter> {
+    ): List<JChapter> {
         if (mangaData == null) {
             throw IllegalArgumentException("mangaData is required for getChapterList")
         }
@@ -282,7 +310,10 @@ object MihonInvoker {
                         fetchDetails = false,
                         fetchChapters = true,
                     ).chapters
-            chapters.onEach { chapter -> MihonMetadataCache.remember(source, chapter) }
+            chapters.map { chapter ->
+                MihonMetadataCache.remember(source, chapter)
+                chapter.toJChapter()
+            }
         }
     }
 
@@ -367,7 +398,16 @@ object MihonInvoker {
         page: Int,
     ): AnimeResponse =
         runBlocking {
-            val animesPage = source.getLatestUpdates(page)
+            val animesPage =
+                if (source.supportsLatest) {
+                    try {
+                        source.getLatestUpdates(page)
+                    } catch (_: UnsupportedOperationException) {
+                        source.getPopularAnime(page)
+                    }
+                } else {
+                    source.getPopularAnime(page)
+                }
             AnimeResponse(
                 animes = animesPage.animes.map { it.toJAnime() },
                 hasNextPage = animesPage.hasNextPage,
@@ -465,13 +505,15 @@ object MihonInvoker {
 
         return runBlocking {
             val videos = source.getVideoList(episodeData.toSEpisode())
-            videos
+            videos.map { MihonVideoProxy.proxy(source, it) }
         }
     }
 
     private fun MangaData.toSManga(source: Source): SManga =
         SManga.create().also { manga ->
-            manga.url = url ?: ""
+            val decodedUrl = BridgeMemo.decode(url ?: "")
+            manga.url = decodedUrl.url
+            manga.memo = decodedUrl.memo
             manga.title = title ?: ""
             manga.artist = artist
             manga.author = author
@@ -485,7 +527,9 @@ object MihonInvoker {
 
     private fun ChapterData.toSChapter(source: Source): SChapter =
         SChapter.create().also { chapter ->
-            chapter.url = url ?: ""
+            val decodedUrl = BridgeMemo.decode(url ?: "")
+            chapter.url = decodedUrl.url
+            chapter.memo = decodedUrl.memo
             chapter.name = name ?: ""
             chapter.date_upload = date_upload ?: 0L
             chapter.chapter_number = chapter_number ?: 0f

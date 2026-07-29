@@ -25,8 +25,8 @@ class DalvikHandler {
             // Deserialize DataBody
             val dataBody = objectMapper.readValue(json, DataBody::class.java)
 
-            val result =
-                MExtensionServerLoader.invokeWithExtension(dataBody.data) { loadedExtension ->
+            val invocation =
+                MExtensionServerLoader.invokeWithExtension(dataBody.data, dataBody.extensionId) { loadedExtension ->
                     val selectedSource = MihonInvoker.selectSource(loadedExtension.sources, dataBody)
                     MihonInvoker.preparePreferences(dataBody, selectedSource)
 
@@ -89,13 +89,16 @@ class DalvikHandler {
                 }
 
             // Serialize response
-            val responseJson = objectMapper.writeValueAsString(result)
+            val responseJson = objectMapper.writeValueAsString(invocation.result)
 
-            NanoHTTPD.newFixedLengthResponse(
-                NanoHTTPD.Response.Status.OK,
-                "application/json",
-                responseJson,
-            )
+            NanoHTTPD
+                .newFixedLengthResponse(
+                    NanoHTTPD.Response.Status.OK,
+                    "application/json",
+                    responseJson,
+                ).apply {
+                    addHeader("X-Mangatan-Extension-Id", invocation.extensionId)
+                }
         } catch (e: LinkageError) {
             errorResponse(e)
         } catch (e: Exception) {
@@ -106,6 +109,7 @@ class DalvikHandler {
         logger.error(error) { "Error handling request" }
         val status =
             when (error) {
+                is MExtensionServerLoader.ExtensionNotLoadedException -> NanoHTTPD.Response.Status.CONFLICT
                 is eu.kanade.tachiyomi.network.HttpException -> {
                     when (error.code) {
                         400 -> NanoHTTPD.Response.Status.BAD_REQUEST
@@ -122,7 +126,12 @@ class DalvikHandler {
         val errorResponse =
             mapOf(
                 "error" to (error.message ?: error.javaClass.simpleName),
-                "code" to (if (error is eu.kanade.tachiyomi.network.HttpException) error.code else 500),
+                "code" to
+                    when (error) {
+                        is MExtensionServerLoader.ExtensionNotLoadedException -> 409
+                        is eu.kanade.tachiyomi.network.HttpException -> error.code
+                        else -> 500
+                    },
             )
         val errorJson = objectMapper.writeValueAsString(errorResponse)
         return NanoHTTPD.newFixedLengthResponse(

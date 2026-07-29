@@ -16,6 +16,11 @@ internal class ExtensionInstanceCache<T>(
     private val load: (ByteArray) -> T,
     private val dispose: (T) -> Unit,
 ) : AutoCloseable {
+    data class KeyedResult<R>(
+        val key: String,
+        val value: R,
+    )
+
     private class Entry<T>(
         val value: T,
         val invocationLock: ReentrantLock = ReentrantLock(),
@@ -28,7 +33,12 @@ internal class ExtensionInstanceCache<T>(
     fun <R> use(
         data: ByteArray,
         block: (T) -> R,
-    ): R =
+    ): R = useAndGetKey(data, block).value
+
+    fun <R> useAndGetKey(
+        data: ByteArray,
+        block: (T) -> R,
+    ): KeyedResult<R> =
         lifecycleLock.readLock().withLock {
             val key = keyOf(data)
             val entry =
@@ -38,7 +48,18 @@ internal class ExtensionInstanceCache<T>(
                     }
                 }
             entry.invocationLock.withLock {
-                block(entry.value)
+                KeyedResult(key, block(entry.value))
+            }
+        }
+
+    fun <R> useByKey(
+        key: String,
+        block: (T) -> R,
+    ): KeyedResult<R>? =
+        lifecycleLock.readLock().withLock {
+            val entry = synchronized(cacheLock) { entries[key] } ?: return@withLock null
+            entry.invocationLock.withLock {
+                KeyedResult(key, block(entry.value))
             }
         }
 

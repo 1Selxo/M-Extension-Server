@@ -4,6 +4,8 @@ import org.jmailen.gradle.kotlinter.tasks.FormatTask
 import org.jmailen.gradle.kotlinter.tasks.LintTask
 import java.io.BufferedReader
 
+val iosRuntime = providers.gradleProperty("iosRuntime").map(String::toBoolean).getOrElse(false)
+
 plugins {
     application
     alias(libs.plugins.kotlin.jvm)
@@ -15,7 +17,12 @@ plugins {
 
 dependencies {
     implementation(libs.bundles.okhttp)
+    implementation(libs.bundles.asm)
     implementation(libs.icu4j.charset)
+    implementation(libs.quickjs4j)
+    if (iosRuntime) {
+        runtimeOnly(libs.slf4jsimple)
+    }
     testImplementation(kotlin("test"))
 
     // AndroidCompat
@@ -39,7 +46,7 @@ sourceSets {
 }
 
 // should be bumped with each stable release
-val m_extension_serverVersion = "v1.0.4.10"
+val m_extension_serverVersion = "v1.0.5.1"
 
 // counts commit count on master
 val m_extension_serverRevision = runCatching {
@@ -85,6 +92,27 @@ tasks {
         archiveBaseName.set(rootProject.name)
         archiveVersion.set(m_extension_serverVersion)
         archiveClassifier.set(m_extension_serverRevision)
+        if (iosRuntime) {
+            dependencies {
+                exclude(dependency("ch.qos.logback:logback-classic:.*"))
+                exclude(dependency("ch.qos.logback:logback-core:.*"))
+            }
+            exclude(
+                "AndroidManifest.xml",
+                "resources.arsc",
+                "res/**",
+                "font/**",
+                "native/**",
+                "jni/**",
+                "dev/datlag/kcef/**",
+                "org/cef/**",
+                "org/jogamp/**",
+                "com/jogamp/**",
+                "jogamp/**",
+                "com/sun/jna/**",
+            )
+            mergeServiceFiles()
+        }
     }
 
     withType<KotlinCompile> {

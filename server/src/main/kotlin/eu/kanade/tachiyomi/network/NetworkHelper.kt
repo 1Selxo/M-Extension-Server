@@ -14,8 +14,6 @@ import eu.kanade.tachiyomi.network.interceptor.UncaughtExceptionInterceptor
 import eu.kanade.tachiyomi.network.interceptor.UserAgentInterceptor
 import okhttp3.Cache
 import okhttp3.OkHttpClient
-import okhttp3.brotli.BrotliInterceptor
-import okhttp3.logging.HttpLoggingInterceptor
 import java.nio.file.Files
 import java.util.concurrent.TimeUnit
 
@@ -32,8 +30,6 @@ class NetworkHelper(
                 .addInterceptor(UncaughtExceptionInterceptor())
                 .addInterceptor(UserAgentInterceptor(::defaultUserAgentProvider))
                 .addInterceptor(CloudflareInterceptor())
-                .addInterceptor(HttpLoggingInterceptor().setLevel(HttpLoggingInterceptor.Level.BODY))
-                .addInterceptor(BrotliInterceptor)
                 .connectTimeout(30, TimeUnit.SECONDS)
                 .readTimeout(30, TimeUnit.SECONDS)
                 .callTimeout(2, TimeUnit.MINUTES)
@@ -48,9 +44,6 @@ class NetworkHelper(
 
     val cloudflareClient by lazy {
         client
-            .newBuilder()
-            .addInterceptor(CloudflareInterceptor())
-            .build()
     }
 
     private var defaultUserAgent: String = System.getProperty("http.agent").orEmpty()

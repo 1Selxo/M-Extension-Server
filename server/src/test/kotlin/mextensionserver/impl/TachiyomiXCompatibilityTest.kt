@@ -8,6 +8,7 @@ import eu.kanade.tachiyomi.source.model.SMangaUpdate
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import mextensionserver.model.JChapter
 import mextensionserver.model.JManga
 import mextensionserver.model.MangaData
 import rx.Observable
@@ -38,7 +39,7 @@ class TachiyomiXCompatibilityTest {
 
         val result = invokeChapters(source)
 
-        assertEquals(listOf("Chapter 1"), result.map(SChapter::name))
+        assertEquals(listOf("Chapter 1"), result.map(JChapter::name))
         assertEquals(listOf(UpdateRequest(fetchDetails = false, fetchChapters = true)), source.requests)
     }
 
@@ -112,7 +113,7 @@ class TachiyomiXCompatibilityTest {
     }
 
     @Suppress("UNCHECKED_CAST")
-    private fun invokeChapters(source: Source): List<SChapter> {
+    private fun invokeChapters(source: Source): List<JChapter> {
         val method =
             MihonInvoker::class.java.getDeclaredMethod(
                 "invokeGetChapterList",
@@ -120,7 +121,7 @@ class TachiyomiXCompatibilityTest {
                 MangaData::class.java,
             )
         method.isAccessible = true
-        return method.invoke(MihonInvoker, source, mangaData()) as List<SChapter>
+        return method.invoke(MihonInvoker, source, mangaData()) as List<JChapter>
     }
 
     private data class UpdateRequest(

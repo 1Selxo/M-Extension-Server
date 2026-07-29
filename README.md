@@ -13,6 +13,19 @@ The manga bridge implements the TachiyomiX 1.6 source API, including combined
 manga updates, source memo metadata, and suspend image URL resolution. Legacy
 RxJava extensions continue to work through compatibility fallbacks.
 
+## Desktop and iOS runtimes
+
+The normal `:server:shadowJar` task builds the desktop server and retains
+KCEF/JCEF plus its native desktop dependencies. Mangatan's on-device iOS
+bridge uses `-PiosRuntime=true`, which replaces the logging backend and
+excludes Chromium, JCEF, JOGL, and other desktop-only runtime classes.
+
+Both modes compile the same bridge and extension-compatibility code. Pull
+requests build and test both variants. Each changed iOS server JAR requires a
+new immutable `ios-runtime-v*` release and checksum. The separate embedded
+OpenJDK release only needs rebuilding when its OpenJDK sources, patches, or
+toolchain change.
+
 ## Credits
 
 The `AndroidCompat` module was originally developed by [@null-dev](https://github.com/null-dev) for [TachiWeb-Server](https://github.com/Tachiweb/TachiWeb-server) and is licensed under `Apache License Version 2.0`.
