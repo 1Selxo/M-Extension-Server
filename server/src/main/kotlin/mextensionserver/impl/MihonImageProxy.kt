@@ -2,6 +2,7 @@ package mextensionserver.impl
 
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.online.HttpSource
+import kotlinx.coroutines.runBlocking
 import okhttp3.Headers
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -163,10 +164,9 @@ internal object MihonImageProxy {
     private fun fetchPage(entry: PageEntry): ImageData {
         if (entry.page.imageUrl == null) {
             entry.page.imageUrl =
-                entry.source
-                    .fetchImageUrl(entry.page)
-                    .toBlocking()
-                    .single()
+                runBlocking {
+                    entry.source.getImageUrl(entry.page)
+                }
         }
         val request = entry.source.imageRequest(entry.page)
         val imageClient =

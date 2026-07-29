@@ -58,6 +58,9 @@ object MExtensionServerLoader {
     ) : AutoCloseable {
         override fun close() {
             try {
+                sources
+                    .filterIsInstance<eu.kanade.tachiyomi.source.Source>()
+                    .forEach(MihonMetadataCache::remove)
                 classLoader.close()
             } finally {
                 if (jarFile.exists() && !jarFile.delete()) {
@@ -166,6 +169,7 @@ object MExtensionServerLoader {
     fun cleanupTempFiles() {
         MihonImageProxy.clear()
         MihonVideoProxy.clear()
+        MihonMetadataCache.clear()
         try {
             loadedExtensions.close()
         } catch (e: Exception) {

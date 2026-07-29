@@ -16,6 +16,9 @@ interface SChapter : Serializable {
 
     var scanlator: String?
 
+    /**
+     * Source-specific metadata introduced by TachiyomiX 1.6.
+     */
     var memo: JsonObject
 
     fun copyFrom(other: SChapter) {
@@ -24,7 +27,7 @@ interface SChapter : Serializable {
         date_upload = other.date_upload
         chapter_number = other.chapter_number
         scanlator = other.scanlator
-        memo = other.memo
+        runCatching { other.memo }.getOrNull()?.let { memo = it }
     }
 
     companion object {

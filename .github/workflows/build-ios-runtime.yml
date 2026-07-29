@@ -1,6 +1,17 @@
 name: Build iOS embedded runtime
 
 on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-ios-runtime.yml"
+      - "AndroidCompat/**"
+      - "server/**"
+      - "gradle/**"
+      - "build.gradle.kts"
+      - "settings.gradle.kts"
+      - "gradle.properties"
   push:
     branches:
       - main
@@ -97,7 +108,19 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      - name: Require a new immutable runtime tag
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$RUNTIME_RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release $RUNTIME_RELEASE_TAG already exists." >&2
+            echo "Bump RUNTIME_RELEASE_TAG before publishing a new runtime." >&2
+            exit 1
+          fi
+
       - name: Publish pinned iOS runtime
+        if: github.event_name != 'pull_request'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RUNTIME_RELEASE_TAG }}

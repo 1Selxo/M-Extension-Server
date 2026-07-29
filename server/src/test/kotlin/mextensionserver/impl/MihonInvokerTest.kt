@@ -4,6 +4,7 @@ import androidx.preference.Preference
 import eu.kanade.tachiyomi.animesource.model.AnimeFilter
 import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
 import eu.kanade.tachiyomi.source.CatalogueSource
+import eu.kanade.tachiyomi.source.Source
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.SManga
@@ -84,7 +85,7 @@ class MihonInvokerTest {
         val method =
             MihonInvoker::class.java.getDeclaredMethod(
                 "invokeGetLatestManga",
-                CatalogueSource::class.java,
+                Source::class.java,
                 Int::class.javaPrimitiveType,
             )
         method.isAccessible = true

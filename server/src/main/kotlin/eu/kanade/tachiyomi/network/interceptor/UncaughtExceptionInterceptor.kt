@@ -2,20 +2,13 @@ package eu.kanade.tachiyomi.network.interceptor
 
 import okhttp3.Interceptor
 import okhttp3.Response
-import java.io.IOException
 
 /**
- * Converts unexpected interceptor failures to IOExceptions so OkHttp callers
- * can handle them as request failures instead of fatal runtime exceptions.
+ * Compatibility interceptor expected by modern extension-core sources.
+ *
+ * Desktop requests already surface failures through the server's request
+ * boundary, so this interceptor intentionally preserves OkHttp's exception.
  */
 class UncaughtExceptionInterceptor : Interceptor {
-    override fun intercept(chain: Interceptor.Chain): Response =
-        try {
-            chain.proceed(chain.request())
-        } catch (exception: Exception) {
-            if (exception is IOException) {
-                throw exception
-            }
-            throw IOException(exception)
-        }
+    override fun intercept(chain: Interceptor.Chain): Response = chain.proceed(chain.request())
 }

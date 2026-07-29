@@ -4,20 +4,17 @@ import okhttp3.Interceptor
 import okhttp3.Response
 
 class UserAgentInterceptor(
-    private val defaultUserAgentProvider: () -> String,
+    private val userAgentProvider: () -> String,
 ) : Interceptor {
     override fun intercept(chain: Interceptor.Chain): Response {
-        val originalRequest = chain.request()
-        if (!originalRequest.header("User-Agent").isNullOrEmpty()) {
-            return chain.proceed(originalRequest)
-        }
+        val request = chain.request()
+        if (request.header("User-Agent") != null) return chain.proceed(request)
 
-        val request =
-            originalRequest
+        return chain.proceed(
+            request
                 .newBuilder()
-                .removeHeader("User-Agent")
-                .addHeader("User-Agent", defaultUserAgentProvider())
-                .build()
-        return chain.proceed(request)
+                .header("User-Agent", userAgentProvider())
+                .build(),
+        )
     }
 }

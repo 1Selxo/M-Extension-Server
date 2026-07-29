@@ -24,9 +24,12 @@ interface SManga : Serializable {
 
     var update_strategy: UpdateStrategy
 
-    var initialized: Boolean
-
+    /**
+     * Source-specific metadata introduced by TachiyomiX 1.6.
+     */
     var memo: JsonObject
+
+    var initialized: Boolean
 
     fun copyFrom(other: SManga) {
         if (other.author != null) {
@@ -50,12 +53,11 @@ interface SManga : Serializable {
         }
 
         status = other.status
+        runCatching { other.memo }.getOrNull()?.let { memo = it }
 
         if (!initialized) {
             initialized = other.initialized
         }
-
-        memo = other.memo
     }
 
     companion object {
