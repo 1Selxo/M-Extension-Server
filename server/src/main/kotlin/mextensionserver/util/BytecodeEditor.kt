@@ -23,12 +23,13 @@ import org.objectweb.asm.tree.TypeInsnNode
 import org.objectweb.asm.tree.analysis.Analyzer
 import org.objectweb.asm.tree.analysis.SourceInterpreter
 import org.objectweb.asm.tree.analysis.SourceValue
-import java.nio.file.FileSystems
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardOpenOption
+import java.nio.file.StandardCopyOption
 import java.util.ArrayDeque
-import kotlin.streams.asSequence
+import java.util.zip.ZipEntry
+import java.util.zip.ZipInputStream
+import java.util.zip.ZipOutputStream
 
 object BytecodeEditor {
     private val logger = KotlinLogging.logger {}
@@ -39,62 +40,89 @@ object BytecodeEditor {
      * @param jarFile The JarFile to replace class references in
      */
     fun fixAndroidClasses(jarFile: Path) {
-        FileSystems.newFileSystem(jarFile, null as ClassLoader?)?.use {
-            val classes =
-                Files
-                    .walk(it.getPath("/"))
-                    .asSequence()
-                    .filterNotNull()
-                    .filterNot(Files::isDirectory)
-                    .mapNotNull(::getClassBytes)
-                    .toList()
-            val hierarchy = ClassHierarchy(classes.map(Pair<Path, ByteArray>::second))
-            val repairedClasses =
-                classes.map { (path, bytes) ->
-                    path to hierarchy.repairDexAllocations(bytes)
-                }
-            hierarchy.findSyntheticConstructors(repairedClasses.map(Pair<Path, ByteArray>::second))
+        val entries = readJarEntries(jarFile)
+        val classes =
+            entries
+                .asSequence()
+                .filterNot(JarEntryData::isDirectory)
+                .mapNotNull { getClassBytes(it.name, it.bytes) }
+                .toList()
+        val hierarchy = ClassHierarchy(classes.map(Pair<String, ByteArray>::second))
+        val repairedClasses =
+            classes.map { (name, bytes) ->
+                name to hierarchy.repairDexAllocations(bytes)
+            }
+        hierarchy.findSyntheticConstructors(repairedClasses.map(Pair<String, ByteArray>::second))
+        val transformedClasses =
             repairedClasses
                 .asSequence()
                 .map { classFile -> transform(classFile, hierarchy) }
-                .forEach(::write)
+                .toMap()
+
+        val replacement = Files.createTempFile(jarFile.parent, "mextensionserver-rewrite-", ".jar")
+        try {
+            ZipOutputStream(Files.newOutputStream(replacement).buffered()).use { output ->
+                entries.forEach { entry ->
+                    output.putNextEntry(ZipEntry(entry.name))
+                    if (!entry.isDirectory) {
+                        output.write(transformedClasses[entry.name] ?: entry.bytes)
+                    }
+                    output.closeEntry()
+                }
+            }
+            Files.move(replacement, jarFile, StandardCopyOption.REPLACE_EXISTING)
+        } finally {
+            Files.deleteIfExists(replacement)
         }
     }
 
-    /**
-     * Get class bytes from a [Path]
-     *
-     * @param path The path entry to get the class bytes from
-     *
-     * @return [Pair] of the [Path] plus the class [ByteArray], or null if it's not a valid class
-     */
-    private fun getClassBytes(path: Path): Pair<Path, ByteArray>? {
-        return try {
-            if (path.toString().endsWith(".class")) {
-                val bytes = Files.readAllBytes(path)
-                if (bytes.size < 4) {
-                    // Invalid class size
-                    return null
-                }
-                val cafebabe =
-                    String.format(
-                        "%02X%02X%02X%02X",
-                        bytes[0],
-                        bytes[1],
-                        bytes[2],
-                        bytes[3],
-                    )
-                if (cafebabe.lowercase() != "cafebabe") {
-                    // Corrupted class
-                    return null
-                }
+    private data class JarEntryData(
+        val name: String,
+        val bytes: ByteArray,
+        val isDirectory: Boolean,
+    )
 
-                path to bytes
-            } else {
-                null
+    private fun readJarEntries(jarFile: Path): List<JarEntryData> {
+        val entries = mutableListOf<JarEntryData>()
+        ZipInputStream(Files.newInputStream(jarFile).buffered()).use { input ->
+            while (true) {
+                val entry = input.nextEntry ?: break
+                entries +=
+                    JarEntryData(
+                        name = entry.name,
+                        bytes = if (entry.isDirectory) byteArrayOf() else input.readBytes(),
+                        isDirectory = entry.isDirectory,
+                    )
+                input.closeEntry()
             }
-        } catch (e: Exception) {
-            logger.error(e) { "Error loading class from Path: $path" }
+        }
+        return entries
+    }
+
+    /**
+     * Get class bytes from a JAR entry.
+     *
+     * @param name The JAR entry name
+     * @param bytes The JAR entry bytes
+     *
+     * @return [Pair] of the entry name plus the class [ByteArray], or null if it is not a valid class
+     */
+    private fun getClassBytes(
+        name: String,
+        bytes: ByteArray,
+    ): Pair<String, ByteArray>? {
+        if (!name.endsWith(".class") || bytes.size < 4) return null
+        val cafebabe =
+            String.format(
+                "%02X%02X%02X%02X",
+                bytes[0],
+                bytes[1],
+                bytes[2],
+                bytes[3],
+            )
+        return if (cafebabe.equals("cafebabe", ignoreCase = true)) {
+            name to bytes
+        } else {
             null
         }
     }
@@ -149,9 +177,9 @@ object BytecodeEditor {
      * @return [ByteArray] with modified bytecode
      */
     private fun transform(
-        pair: Pair<Path, ByteArray>,
+        pair: Pair<String, ByteArray>,
         hierarchy: ClassHierarchy,
-    ): Pair<Path, ByteArray> {
+    ): Pair<String, ByteArray> {
         // Read the class and prepare to modify it
         val cr = ClassReader(pair.second)
         // dex2jar output can have missing or stale StackMapTable entries. Rebuild
@@ -356,15 +384,6 @@ object BytecodeEditor {
             ClassReader.SKIP_FRAMES,
         )
         return pair.first to cw.toByteArray()
-    }
-
-    private fun write(pair: Pair<Path, ByteArray>) {
-        Files.write(
-            pair.first,
-            pair.second,
-            StandardOpenOption.CREATE,
-            StandardOpenOption.TRUNCATE_EXISTING,
-        )
     }
 
     private data class ClassInfo(

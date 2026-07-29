@@ -2,10 +2,11 @@ package mextensionserver.util
 
 import org.objectweb.asm.ClassWriter
 import org.objectweb.asm.Opcodes
-import java.net.URI
 import java.net.URLClassLoader
-import java.nio.file.FileSystems
 import java.nio.file.Files
+import java.nio.file.Path
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -15,23 +16,21 @@ class BytecodeEditorTest {
     @Test
     fun `repairs missing frames and dex constructors`() {
         val jar = Files.createTempFile("bytecode-editor-test", ".jar")
-        Files.delete(jar)
         try {
-            FileSystems
-                .newFileSystem(
-                    URI.create("jar:${jar.toUri()}"),
-                    mapOf("create" to "true"),
-                ).use { zip ->
-                    Files.write(zip.getPath("/a.class"), dexStyleFunction())
-                    Files.write(zip.getPath("/b.class"), dexStyleUnaryFunction())
-                    Files.write(zip.getPath("/b2.class"), dexStyleUnaryFunctionWithArgument())
-                    Files.write(zip.getPath("/h.class"), dexStyleLambda())
-                    Files.write(zip.getPath("/j.class"), dexStyleHolder())
-                    Files.write(zip.getPath("/SourceBase.class"), sourceBase())
-                    Files.write(zip.getPath("/SourceOne.class"), concreteSource("SourceOne"))
-                    Files.write(zip.getPath("/SourceTwo.class"), concreteSource("SourceTwo"))
-                    Files.write(zip.getPath("/VerifierFixture.class"), verifierFixture())
-                }
+            writeJar(
+                jar,
+                mapOf(
+                    "a.class" to dexStyleFunction(),
+                    "b.class" to dexStyleUnaryFunction(),
+                    "b2.class" to dexStyleUnaryFunctionWithArgument(),
+                    "h.class" to dexStyleLambda(),
+                    "j.class" to dexStyleHolder(),
+                    "SourceBase.class" to sourceBase(),
+                    "SourceOne.class" to concreteSource("SourceOne"),
+                    "SourceTwo.class" to concreteSource("SourceTwo"),
+                    "VerifierFixture.class" to verifierFixture(),
+                ),
+            )
 
             BytecodeEditor.fixAndroidClasses(jar)
 
@@ -63,6 +62,19 @@ class BytecodeEditorTest {
             }
         } finally {
             Files.deleteIfExists(jar)
+        }
+    }
+
+    private fun writeJar(
+        jar: Path,
+        entries: Map<String, ByteArray>,
+    ) {
+        ZipOutputStream(Files.newOutputStream(jar).buffered()).use { output ->
+            entries.forEach { (name, bytes) ->
+                output.putNextEntry(ZipEntry(name))
+                output.write(bytes)
+                output.closeEntry()
+            }
         }
     }
 
