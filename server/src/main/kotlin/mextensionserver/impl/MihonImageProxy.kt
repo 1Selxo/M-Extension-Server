@@ -9,6 +9,8 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
 import okhttp3.Request
+import okhttp3.Response
+import java.io.IOException
 import java.util.UUID
 
 /**
@@ -21,6 +23,7 @@ import java.util.UUID
 internal object MihonImageProxy {
     private const val MAX_ENTRIES = 4096
     private const val MANGADEX_COVER_HOST = "uploads.mangadex.org"
+    private const val IMAGE_REQUEST_ATTEMPTS = 2
 
     data class ImageData(
         val bytes: ByteArray,
@@ -174,9 +177,9 @@ internal object MihonImageProxy {
                 .newBuilder()
                 .protocols(listOf(Protocol.HTTP_1_1))
                 .build()
-        return imageClient.newCall(request).execute().use { response ->
+        return executeImageRequest(imageClient, request).use { response ->
             check(response.isSuccessful) {
-                "Extension image request failed with HTTP ${response.code}"
+                "Extension image request to ${request.url.host} failed with HTTP ${response.code}"
             }
             val body = requireNotNull(response.body) { "Extension returned an empty image response" }
             ImageData(
@@ -185,6 +188,36 @@ internal object MihonImageProxy {
             )
         }
     }
+
+    private fun executeImageRequest(
+        client: OkHttpClient,
+        request: Request,
+    ): Response {
+        repeat(IMAGE_REQUEST_ATTEMPTS) { attempt ->
+            try {
+                val response = client.newCall(request).execute()
+                if (
+                    response.isSuccessful ||
+                    !isTransientImageStatus(response.code) ||
+                    attempt == IMAGE_REQUEST_ATTEMPTS - 1
+                ) {
+                    return response
+                }
+                response.close()
+            } catch (error: IOException) {
+                if (attempt == IMAGE_REQUEST_ATTEMPTS - 1) throw error
+            }
+        }
+        error("Image retry loop finished without a response")
+    }
+
+    private fun isTransientImageStatus(statusCode: Int): Boolean =
+        statusCode == 408 ||
+            statusCode == 425 ||
+            statusCode == 429 ||
+            statusCode == 500 ||
+            statusCode in 502..504 ||
+            statusCode in 520..527
 
     private fun fetchPoster(entry: PosterEntry): ImageData? {
         val shouldTryOriginal = synchronized(lock) { !entry.originalFailed }

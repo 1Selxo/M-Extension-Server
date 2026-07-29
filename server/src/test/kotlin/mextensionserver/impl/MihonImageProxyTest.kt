@@ -20,6 +20,7 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 class MihonImageProxyTest {
@@ -116,14 +117,44 @@ class MihonImageProxyTest {
         assertEquals(source.resolvedImageUrl, page.imageUrl)
     }
 
+    @Test
+    fun `retries transient image responses once`() {
+        val source = TestHttpSource(pageResponseCodes = listOf(522, 200))
+        val page = Page(0, imageUrl = source.resolvedImageUrl)
+        MihonImageProxy.configure(39641)
+
+        val proxyUrl = requireNotNull(MihonImageProxy.register(source, page))
+        val image = requireNotNull(MihonImageProxy.fetch(URI(proxyUrl).path.substringAfterLast('/')))
+
+        assertEquals(2, source.pageRequestCount)
+        assertContentEquals(source.imageBytes, image.bytes)
+    }
+
+    @Test
+    fun `does not retry permanent image responses`() {
+        val source = TestHttpSource(pageResponseCodes = listOf(404))
+        val page = Page(0, imageUrl = source.resolvedImageUrl)
+        MihonImageProxy.configure(39641)
+
+        val proxyUrl = requireNotNull(MihonImageProxy.register(source, page))
+        assertFailsWith<IllegalStateException> {
+            MihonImageProxy.fetch(URI(proxyUrl).path.substringAfterLast('/'))
+        }
+
+        assertEquals(1, source.pageRequestCount)
+    }
+
     private open class TestHttpSource(
         private val brokenPosterOrigin: Boolean = false,
+        pageResponseCodes: List<Int> = emptyList(),
     ) : HttpSource() {
         val imageBytes = byteArrayOf(0xff.toByte(), 0xd8.toByte(), 0xff.toByte(), 0xd9.toByte())
         val resolvedImageUrl = "https://example.test/resolved.jpg"
         val requestedUrls = mutableListOf<String>()
+        private val pendingPageResponseCodes = pageResponseCodes.toMutableList()
         var seenFragment: String? = null
         var imageUrlFetches = 0
+        var pageRequestCount = 0
 
         override val name = "Test source"
         override val lang = "en"
@@ -133,20 +164,28 @@ class MihonImageProxyTest {
             OkHttpClient
                 .Builder()
                 .addInterceptor { chain ->
+                    pageRequestCount++
                     seenFragment = chain.request().url.fragment
                     requestedUrls += chain.request().url.toString()
                     val broken = brokenPosterOrigin && chain.request().url.host == "broken.test"
+                    val responseCode =
+                        if (pendingPageResponseCodes.isEmpty()) {
+                            if (broken) 404 else 200
+                        } else {
+                            pendingPageResponseCodes.removeAt(0)
+                        }
+                    val successful = responseCode in 200..299
                     Response
                         .Builder()
                         .request(chain.request())
                         .protocol(Protocol.HTTP_1_1)
-                        .code(if (broken) 404 else 200)
-                        .message(if (broken) "Not Found" else "OK")
+                        .code(responseCode)
+                        .message(if (successful) "OK" else "HTTP $responseCode")
                         .body(
-                            if (broken) {
-                                "not found".toResponseBody("text/plain".toMediaType())
-                            } else {
+                            if (successful) {
                                 imageBytes.toResponseBody("image/jpeg".toMediaType())
+                            } else {
+                                "request failed".toResponseBody("text/plain".toMediaType())
                             },
                         ).build()
                 }.build()
