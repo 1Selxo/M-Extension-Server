@@ -20,6 +20,8 @@ dependencies {
     implementation(libs.bundles.asm)
     implementation(libs.icu4j.charset)
     implementation(libs.quickjs4j)
+    implementation(libs.newpipe.extractor)
+    implementation(libs.protobuf.javalite)
     if (iosRuntime) {
         runtimeOnly(libs.slf4jsimple)
     }
@@ -46,7 +48,7 @@ sourceSets {
 }
 
 // should be bumped with each stable release
-val m_extension_serverVersion = "v1.0.5.1"
+val m_extension_serverVersion = "v1.0.6.0"
 
 // counts commit count on master
 val m_extension_serverRevision = runCatching {

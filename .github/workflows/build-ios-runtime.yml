@@ -29,7 +29,7 @@ permissions:
   contents: write
 
 env:
-  RUNTIME_RELEASE_TAG: ios-runtime-v6
+  RUNTIME_RELEASE_TAG: ios-runtime-v7
   GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx2g
 
 jobs:
@@ -125,7 +125,7 @@ jobs:
         with:
           tag_name: ${{ env.RUNTIME_RELEASE_TAG }}
           target_commitish: ${{ github.sha }}
-          name: M-Extension-Server embedded iOS runtime v6
+          name: M-Extension-Server embedded iOS runtime v7
           body: |
             Headless ShadowJar for Mangatan's on-device iOS Mihon bridge.
 
@@ -134,6 +134,10 @@ jobs:
             Its default OkHttp client matches the current Mihon extension
             contract, including MangaFire 1.6.27, and retries one transient
             extension-image failure.
+
+            This runtime adds the NewPipe Extractor v0.26.3 YouTube resolver,
+            including the SABR workaround for separate audio and resolutions
+            above 360p.
           files: |
             release/MExtensionServer-ios.jar
             release/SHA256SUMS

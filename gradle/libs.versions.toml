@@ -8,6 +8,8 @@ dex2jar = "2.4.33"
 asm = "9.10.1"
 settings = "1.3.0"
 twelvemonkeys = "3.12.0"
+newpipe-extractor = "v0.26.3"
+protobuf-javalite = "4.35.1"
 
 [libraries]
 # Kotlin
@@ -115,6 +117,8 @@ injekt-core = { module = "com.github.null2264.injekt:injekt-core", version = "41
 quickjs4j = "io.roastedroot:quickjs4j:0.0.13"
 quickjs4j-annotations = "io.roastedroot:quickjs4j-annotations:0.0.13"
 quickjs4j-processor = "io.roastedroot:quickjs4j-processor:0.0.13"
+newpipe-extractor = { module = "com.github.TeamNewPipe:NewPipeExtractor", version.ref = "newpipe-extractor" }
+protobuf-javalite = { module = "com.google.protobuf:protobuf-javalite", version.ref = "protobuf-javalite" }
 
 [plugins]
 # Kotlin

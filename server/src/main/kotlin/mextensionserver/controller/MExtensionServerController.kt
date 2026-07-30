@@ -53,12 +53,13 @@ class MExtensionServerController(
         override fun serve(session: IHTTPSession): Response =
             when (session.uri) {
                 "/dalvik" -> DalvikHandler().serve(session)
+                "/youtube/resolve" -> YouTubeHandler().serve(session)
                 "/" -> newFixedLengthResponse("mextensionserver Server Running")
                 "/capabilities" ->
                     newFixedLengthResponse(
                         Response.Status.OK,
                         "application/json",
-                        """{"mangatanMihonBridge":1,"sourceFactory":true,"preferenceCallbacks":true,"imageProxy":true,"videoProxy":true,"sourceUrls":true,"extensionHandles":true}""",
+                        """{"mangatanMihonBridge":1,"sourceFactory":true,"preferenceCallbacks":true,"imageProxy":true,"videoProxy":true,"youtubeResolver":true,"sourceUrls":true,"extensionHandles":true}""",
                     )
                 "/stop" -> {
                     newFixedLengthResponse("Server stopping").also {
