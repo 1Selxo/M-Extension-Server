@@ -1,5 +1,8 @@
 package mextensionserver.impl
 
+import android.content.pm.ApplicationInfo
+import android.content.pm.PackageInfo
+import android.os.Bundle
 import androidx.preference.Preference
 import eu.kanade.tachiyomi.animesource.model.AnimeFilter
 import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
@@ -12,11 +15,62 @@ import mextensionserver.model.DataBody
 import mextensionserver.model.JFilterList
 import mextensionserver.model.JGroupFilter
 import mextensionserver.model.MangaResponse
+import java.net.URLClassLoader
+import kotlin.io.path.createTempFile
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class MihonInvokerTest {
+    @Test
+    fun `reports stable package metadata for local APK imports`() {
+        val jar = createTempFile(prefix = "mextensionserver-test-", suffix = ".jar").toFile()
+        val packageInfo =
+            PackageInfo().apply {
+                packageName = "eu.kanade.tachiyomi.extension.en.localtest"
+                versionName = "1.4.7"
+                versionCode = 12
+                applicationInfo =
+                    ApplicationInfo().apply {
+                        nonLocalizedLabel = "Tachiyomi: Local Test"
+                        metaData = Bundle().apply { putString("tachiyomi.extension.nsfw", "1") }
+                    }
+            }
+        val extension =
+            MExtensionServerLoader.LoadedExtension(
+                initialSources = listOf(NoLatestSource()),
+                packageInfo = packageInfo,
+                jarFile = jar,
+                classLoader = URLClassLoader(emptyArray()),
+            )
+
+        val result =
+            MihonInvoker.invokeMethod(
+                extension,
+                DataBody(method = "extensionInfo"),
+            ) as Map<*, *>
+
+        assertEquals("eu.kanade.tachiyomi.extension.en.localtest", result["packageName"])
+        assertEquals("Local Test", result["name"])
+        assertEquals("1.4.7", result["versionName"])
+        assertEquals(12, result["versionCode"])
+        assertEquals("ja", result["lang"])
+        assertEquals(true, result["isNsfw"])
+        assertEquals("manga", result["itemType"])
+        assertEquals(
+            listOf(
+                mapOf(
+                    "id" to "1",
+                    "name" to "No latest",
+                    "lang" to "ja",
+                    "baseUrl" to "",
+                ),
+            ),
+            result["sources"],
+        )
+        extension.close()
+    }
+
     @Test
     fun `replace-present preference mode is explicit`() {
         val context =

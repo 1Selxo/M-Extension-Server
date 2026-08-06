@@ -55,6 +55,15 @@ object MihonInvoker {
         loadedExtension: MExtensionServerLoader.LoadedExtension,
         data: DataBody,
     ): Any {
+        if (data.method == "extensionInfo") {
+            loadedExtension.sources.firstOrNull()?.let { source ->
+                preparePreferences(data, source)
+            }
+            return extensionDescriptor(
+                loadedExtension,
+                loadedExtension.refreshFactorySources(),
+            )
+        }
         if (data.method == "sourcesManga" || data.method == "sourcesAnime") {
             val bootstrapSource = selectSource(loadedExtension.sources, data)
             preparePreferences(data, bootstrapSource)
@@ -150,6 +159,78 @@ object MihonInvoker {
                         }.getOrDefault(""),
                 )
             else -> throw IllegalArgumentException("Unknown source type: ${source.javaClass}")
+        }
+
+    private fun extensionDescriptor(
+        extension: MExtensionServerLoader.LoadedExtension,
+        sources: List<Any>,
+    ): Map<String, Any> {
+        require(sources.isNotEmpty()) { "No sources found in extension" }
+        val packageInfo = extension.packageInfo
+        val applicationInfo = packageInfo.applicationInfo
+        val packageName = packageInfo.packageName.orEmpty()
+        val label =
+            applicationInfo
+                ?.metaData
+                ?.getString("tachiyomix.name")
+                ?.takeIf(String::isNotBlank)
+                ?: applicationInfo
+                    ?.nonLocalizedLabel
+                    ?.toString()
+                    ?.takeIf(String::isNotBlank)
+        val name =
+            label
+                ?.removePrefix("Tachiyomi: ")
+                ?.removePrefix("Aniyomi: ")
+                ?: sourceName(sources.singleOrNull())
+                ?: packageName
+        val languages = sources.mapNotNull(::sourceLanguage).filter(String::isNotBlank).toSet()
+        val language =
+            when (languages.size) {
+                0 -> ""
+                1 -> languages.single()
+                else -> "all"
+            }
+        val itemType =
+            if (sources.all { it is eu.kanade.tachiyomi.animesource.AnimeSource }) {
+                "anime"
+            } else if (sources.all { it is Source }) {
+                "manga"
+            } else {
+                throw IllegalArgumentException("Extension mixes manga and anime sources")
+            }
+        val metadata = applicationInfo?.metaData
+        val isNsfw =
+            sequenceOf(
+                "tachiyomi.extension.nsfw",
+                "tachiyomi.animeextension.nsfw",
+                "tachiyomi.extension.content.warning",
+            ).any { key -> metadata?.getString(key)?.toIntOrNull()?.let { it > 0 } == true }
+
+        return mapOf(
+            "packageName" to packageName,
+            "name" to name,
+            "versionName" to packageInfo.versionName.orEmpty(),
+            "versionCode" to packageInfo.versionCode,
+            "lang" to language,
+            "isNsfw" to isNsfw,
+            "itemType" to itemType,
+            "sources" to sources.map(::sourceDescriptor),
+        )
+    }
+
+    private fun sourceName(source: Any?): String? =
+        when (source) {
+            is Source -> source.name
+            is eu.kanade.tachiyomi.animesource.AnimeSource -> source.name
+            else -> null
+        }
+
+    private fun sourceLanguage(source: Any): String? =
+        when (source) {
+            is Source -> source.lang
+            is eu.kanade.tachiyomi.animesource.AnimeSource -> source.lang
+            else -> null
         }
 
     private fun bridgeContext(data: DataBody): Map<String, Any> =
