@@ -9,6 +9,10 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
+import java.io.ByteArrayInputStream
+import java.io.FilterInputStream
+import java.io.InputStream
 import java.nio.charset.StandardCharsets
 import java.util.UUID
 import java.util.concurrent.TimeUnit
@@ -29,7 +33,8 @@ internal object MihonVideoProxy {
     data class VideoData(
         val statusCode: Int,
         val contentType: String,
-        val bytes: ByteArray,
+        val stream: InputStream,
+        val contentLength: Long,
         val responseHeaders: Map<String, String>,
     )
 
@@ -147,35 +152,44 @@ internal object MihonVideoProxy {
                 }.build()
 
         val requestClient = if (entry.url.isLoopback()) loopbackClient else entry.client
-        return requestClient.newCall(request).execute().use { response ->
+        val response = requestClient.newCall(request).execute()
+        try {
             val body = requireNotNull(response.body) { "Extension returned an empty video response" }
-            val bytes = body.bytes()
             val contentType = body.contentType()?.toString() ?: "application/octet-stream"
-            val rewritten =
-                if (response.isSuccessful && isHlsManifest(contentType, bytes)) {
+            val responseHeaders =
+                listOf("Accept-Ranges", "Content-Range", "Cache-Control")
+                    .mapNotNull { name -> response.header(name)?.let { name to it } }
+                    .toMap()
+
+            if (response.isSuccessful && isHlsManifest(contentType, response.request.url, body.source().peek())) {
+                val bytes = body.bytes()
+                val rewritten =
                     rewriteManifest(
                         client = entry.client,
                         baseUrl = response.request.url,
                         headers = entry.headers,
                         bytes = bytes,
                     )
-                } else {
-                    bytes
-                }
-            VideoData(
+                response.close()
+                return VideoData(
+                    statusCode = response.code,
+                    contentType = "application/vnd.apple.mpegurl",
+                    stream = ByteArrayInputStream(rewritten),
+                    contentLength = rewritten.size.toLong(),
+                    responseHeaders = responseHeaders,
+                )
+            }
+
+            return VideoData(
                 statusCode = response.code,
-                contentType =
-                    if (rewritten !== bytes) {
-                        "application/vnd.apple.mpegurl"
-                    } else {
-                        contentType
-                    },
-                bytes = rewritten,
-                responseHeaders =
-                    listOf("Accept-Ranges", "Content-Range", "Cache-Control")
-                        .mapNotNull { name -> response.header(name)?.let { name to it } }
-                        .toMap(),
+                contentType = contentType,
+                stream = ResponseClosingInputStream(body.byteStream(), response),
+                contentLength = body.contentLength(),
+                responseHeaders = responseHeaders,
             )
+        } catch (error: Throwable) {
+            response.close()
+            throw error
         }
     }
 
@@ -247,17 +261,38 @@ internal object MihonVideoProxy {
 
     private fun isHlsManifest(
         contentType: String,
-        bytes: ByteArray,
+        url: HttpUrl,
+        source: okio.BufferedSource,
     ): Boolean {
         if (contentType.contains("mpegurl", ignoreCase = true)) {
             return true
         }
-        val prefixLength = minOf(bytes.size, 64)
-        return bytes
-            .copyOfRange(0, prefixLength)
+        if (!url.encodedPath.endsWith(".m3u8", ignoreCase = true) && !contentType.contains("octet-stream", ignoreCase = true)) {
+            return false
+        }
+        source.request(64)
+        val prefix = source.readByteArray(minOf(source.buffer.size, 64L))
+        return prefix
             .toString(StandardCharsets.UTF_8)
             .trimStart('\uFEFF', ' ', '\t', '\r', '\n')
             .startsWith("#EXTM3U")
+    }
+
+    private class ResponseClosingInputStream(
+        stream: InputStream,
+        private val response: Response,
+    ) : FilterInputStream(stream) {
+        private var closed = false
+
+        override fun close() {
+            if (closed) return
+            closed = true
+            try {
+                super.close()
+            } finally {
+                response.close()
+            }
+        }
     }
 
     private fun HttpUrl.isLoopback(): Boolean = host == "localhost" || host == "127.0.0.1" || host == "::1"

@@ -5,7 +5,11 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
 import okhttp3.Response
+import okhttp3.ResponseBody
 import okhttp3.ResponseBody.Companion.toResponseBody
+import okio.BufferedSource
+import okio.buffer
+import okio.source
 import java.net.URI
 import kotlin.test.AfterTest
 import kotlin.test.Test
@@ -64,7 +68,7 @@ class MihonVideoProxyTest {
         MihonVideoProxy.configure(39642)
 
         val proxyUrl = assertNotNull(MihonVideoProxy.register(client, "https://video.test/master", headers, suffixHint = ".m3u8"))
-        val manifest = assertNotNull(MihonVideoProxy.fetch(proxyUrl.token())).bytes.decodeToString()
+        val manifest = assertNotNull(MihonVideoProxy.fetch(proxyUrl.token())).stream.use { it.readBytes().decodeToString() }
 
         assertTrue(proxyUrl.startsWith("http://127.0.0.1:39642/video/"))
         assertTrue(proxyUrl.endsWith(".m3u8"))
@@ -112,7 +116,74 @@ class MihonVideoProxyTest {
         assertEquals("bytes=4-7", seenRange)
         assertEquals("bytes", response.responseHeaders["Accept-Ranges"])
         assertEquals("bytes 4-7/8", response.responseHeaders["Content-Range"])
-        assertContentEquals(bytes, response.bytes)
+        assertEquals(bytes.size.toLong(), response.contentLength)
+        assertContentEquals(bytes, response.stream.use { it.readBytes() })
+    }
+
+    @Test
+    fun `streams static video bodies instead of buffering the full response`() {
+        val totalBytes = 2 * 1024 * 1024
+        var bytesRead = 0
+        var bodyClosed = false
+        val body =
+            object : ResponseBody() {
+                override fun contentType() = "video/x-matroska".toMediaType()
+
+                override fun contentLength() = totalBytes.toLong()
+
+                override fun source(): BufferedSource =
+                    object : java.io.InputStream() {
+                        private var remaining = totalBytes
+
+                        override fun read(): Int {
+                            if (remaining == 0) return -1
+                            remaining--
+                            bytesRead++
+                            return 0
+                        }
+
+                        override fun read(
+                            buffer: ByteArray,
+                            offset: Int,
+                            length: Int,
+                        ): Int {
+                            if (remaining == 0) return -1
+                            val count = minOf(length, remaining)
+                            buffer.fill(0, offset, offset + count)
+                            remaining -= count
+                            bytesRead += count
+                            return count
+                        }
+
+                        override fun close() {
+                            bodyClosed = true
+                        }
+                    }.source().buffer()
+            }
+        val client =
+            OkHttpClient
+                .Builder()
+                .addInterceptor { chain ->
+                    Response
+                        .Builder()
+                        .request(chain.request())
+                        .protocol(Protocol.HTTP_1_1)
+                        .code(200)
+                        .message("OK")
+                        .body(body)
+                        .build()
+                }.build()
+        MihonVideoProxy.configure(39642)
+        val proxyUrl = assertNotNull(MihonVideoProxy.register(client, "https://video.test/movie.mkv"))
+
+        val response = assertNotNull(MihonVideoProxy.fetch(proxyUrl.token()))
+
+        assertEquals(0, bytesRead)
+        assertEquals(totalBytes.toLong(), response.contentLength)
+        assertEquals(32, response.stream.read(ByteArray(32)))
+        assertTrue(bytesRead in 32 until totalBytes)
+        response.stream.close()
+        assertTrue(bodyClosed)
     }
 
     private fun String.token(): String = URI(this).path.substringAfterLast('/')

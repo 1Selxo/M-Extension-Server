@@ -3,7 +3,6 @@ package mextensionserver.controller
 import fi.iki.elonen.NanoHTTPD
 import io.github.oshai.kotlinlogging.KotlinLogging
 import mextensionserver.impl.MihonVideoProxy
-import java.io.ByteArrayInputStream
 
 class VideoProxyHandler {
     private val logger = KotlinLogging.logger {}
@@ -19,16 +18,25 @@ class VideoProxyHandler {
             val status =
                 NanoHTTPD.Response.Status.lookup(video.statusCode)
                     ?: NanoHTTPD.Response.Status.INTERNAL_ERROR
-            NanoHTTPD
-                .newFixedLengthResponse(
-                    status,
-                    video.contentType,
-                    ByteArrayInputStream(video.bytes),
-                    video.bytes.size.toLong(),
-                ).apply {
-                    video.responseHeaders.forEach { (name, value) -> addHeader(name, value) }
-                    addHeader("Access-Control-Allow-Origin", "*")
+            val response =
+                if (video.contentLength >= 0) {
+                    NanoHTTPD.newFixedLengthResponse(
+                        status,
+                        video.contentType,
+                        video.stream,
+                        video.contentLength,
+                    )
+                } else {
+                    NanoHTTPD.newChunkedResponse(
+                        status,
+                        video.contentType,
+                        video.stream,
+                    )
                 }
+            response.apply {
+                video.responseHeaders.forEach { (name, value) -> addHeader(name, value) }
+                addHeader("Access-Control-Allow-Origin", "*")
+            }
         } catch (error: Throwable) {
             logger.error(error) { "Error proxying extension video" }
             NanoHTTPD.newFixedLengthResponse(
