@@ -51,11 +51,34 @@ object MExtensionServerLoader {
     }
 
     class LoadedExtension(
-        val sources: List<Any>,
+        initialSources: List<Any>,
         val packageInfo: PackageInfo,
         val jarFile: File,
         private val classLoader: URLClassLoader,
+        private val sourceFactory: (() -> List<Any>)? = null,
     ) : AutoCloseable {
+        @Volatile
+        var sources: List<Any> = initialSources
+            private set
+
+        /**
+         * Recreate factory children after request preferences have been
+         * applied. Configurable factories such as Jellyfin decide how many
+         * sources exist from SharedPreferences, so the list created while the
+         * APK was first loaded can be stale after a sync or preference edit.
+         */
+        @Synchronized
+        fun refreshFactorySources(): List<Any> {
+            val createSources = sourceFactory ?: return sources
+            val previous = sources
+            val refreshed = createSources()
+            previous
+                .filterIsInstance<eu.kanade.tachiyomi.source.Source>()
+                .forEach(MihonMetadataCache::remove)
+            sources = refreshed
+            return refreshed
+        }
+
         override fun close() {
             try {
                 sources
@@ -134,16 +157,30 @@ object MExtensionServerLoader {
             val loadedSource = loadExtensionSources(jarFile, className, tempApkFile)
             val extensionMainClassInstance = loadedSource.instance
             classLoader = loadedSource.classLoader
+            val sourceFactory: (() -> List<Any>)? =
+                when (extensionMainClassInstance) {
+                    is eu.kanade.tachiyomi.source.SourceFactory ->
+                        extensionMainClassInstance::createSources
+                    is eu.kanade.tachiyomi.animesource.AnimeSourceFactory ->
+                        extensionMainClassInstance::createSources
+                    else -> null
+                }
             val sources: List<Any> =
                 when (extensionMainClassInstance) {
                     is eu.kanade.tachiyomi.source.Source -> listOf(extensionMainClassInstance)
-                    is eu.kanade.tachiyomi.source.SourceFactory -> extensionMainClassInstance.createSources()
+                    is eu.kanade.tachiyomi.source.SourceFactory -> sourceFactory!!.invoke()
                     is eu.kanade.tachiyomi.animesource.AnimeSource -> listOf(extensionMainClassInstance)
-                    is eu.kanade.tachiyomi.animesource.AnimeSourceFactory -> extensionMainClassInstance.createSources()
+                    is eu.kanade.tachiyomi.animesource.AnimeSourceFactory -> sourceFactory!!.invoke()
                     else -> throw RuntimeException("Unknown source class type! ${extensionMainClassInstance.javaClass}")
                 }
 
-            return LoadedExtension(sources, packageInfo, jarFile, loadedSource.classLoader)
+            return LoadedExtension(
+                sources,
+                packageInfo,
+                jarFile,
+                loadedSource.classLoader,
+                sourceFactory,
+            )
         } catch (error: Throwable) {
             try {
                 classLoader?.close()

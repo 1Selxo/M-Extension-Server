@@ -8,6 +8,7 @@ import eu.kanade.tachiyomi.source.Source
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.SManga
+import mextensionserver.model.DataBody
 import mextensionserver.model.JFilterList
 import mextensionserver.model.JGroupFilter
 import mextensionserver.model.MangaResponse
@@ -16,6 +17,29 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class MihonInvokerTest {
+    @Test
+    fun `replace-present preference mode is explicit`() {
+        val context =
+            mutableListOf<Map<String, Any>>(
+                mapOf(
+                    "key" to "__mangatan_bridge_context__",
+                    "preferenceApplyMode" to "replace-present",
+                ),
+            )
+
+        assertTrue(
+            MihonInvoker.shouldReplacePresentPreferences(
+                DataBody(method = "sourcesAnime", preferences = context),
+            ),
+        )
+        assertEquals(
+            false,
+            MihonInvoker.shouldReplacePresentPreferences(
+                DataBody(method = "sourcesAnime", preferences = mutableListOf()),
+            ),
+        )
+    }
+
     @Test
     fun `converts children of grouped anime filters`() {
         val child = TestCheckBox()

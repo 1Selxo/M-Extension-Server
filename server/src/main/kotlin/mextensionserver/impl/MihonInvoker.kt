@@ -46,6 +46,7 @@ import uy.kohesive.injekt.api.get
 object MihonInvoker {
     private val logger = KotlinLogging.logger {}
     private const val BRIDGE_CONTEXT_KEY = "__mangatan_bridge_context__"
+    private const val REPLACE_PRESENT_PREFERENCES = "replace-present"
     private const val KL_RAW_SOURCE_ID = "7433897302034602657"
     private val context: Application
         get() = Injekt.get()
@@ -55,7 +56,9 @@ object MihonInvoker {
         data: DataBody,
     ): Any {
         if (data.method == "sourcesManga" || data.method == "sourcesAnime") {
-            return loadedExtension.sources.map(::sourceDescriptor)
+            val bootstrapSource = selectSource(loadedExtension.sources, data)
+            preparePreferences(data, bootstrapSource)
+            return loadedExtension.refreshFactorySources().map(::sourceDescriptor)
         }
 
         val source = selectSource(loadedExtension.sources, data)
@@ -164,8 +167,17 @@ object MihonInvoker {
             } else {
                 null
             }
-        applyPreferences(data, source, skipPreferenceKey = changedKey)
+        val replacePresent = shouldReplacePresentPreferences(data)
+        applyPreferences(
+            data,
+            source,
+            skipPreferenceKey = changedKey,
+            replacePresent = replacePresent,
+        )
     }
+
+    fun shouldReplacePresentPreferences(data: DataBody): Boolean =
+        bridgeContext(data)["preferenceApplyMode"]?.toString() == REPLACE_PRESENT_PREFERENCES
 
     private fun invokeHeadersManga(source: Source): List<String> =
         if (source is HttpSource) {
@@ -754,6 +766,7 @@ object MihonInvoker {
         data: DataBody,
         source: Any,
         skipPreferenceKey: String? = null,
+        replacePresent: Boolean = false,
     ) {
         val preferences = data.preferences ?: return
         val sourceId =
@@ -784,7 +797,7 @@ object MihonInvoker {
             // request. Use it to initialize a fresh JVM preference store, but
             // do not let an older snapshot overwrite a value that the source
             // has already normalized and persisted itself.
-            if (prefs.contains(key)) continue
+            if (!replacePresent && prefs.contains(key)) continue
             when {
                 prefMap.containsKey("checkBoxPreference") -> {
                     val checkBox = prefMap["checkBoxPreference"] as? Map<*, *>
