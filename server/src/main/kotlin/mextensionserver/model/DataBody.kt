@@ -44,6 +44,9 @@ data class AnimeData(
     val status: Int?,
     val thumbnail_url: String?,
     val initialized: Boolean?,
+    val fetch_type: String? = null,
+    val season_number: Double? = null,
+    val background_url: String? = null,
 )
 
 data class EpisodeData(
@@ -52,6 +55,9 @@ data class EpisodeData(
     val date_upload: Long?,
     val episode_number: Float?,
     val scanlator: String?,
+    val fillermark: Boolean? = null,
+    val summary: String? = null,
+    val preview_url: String? = null,
 )
 
 data class JFilterList(

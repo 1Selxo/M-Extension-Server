@@ -29,7 +29,7 @@ permissions:
   contents: write
 
 env:
-  RUNTIME_RELEASE_TAG: ios-runtime-v9
+  RUNTIME_RELEASE_TAG: ios-runtime-v10
   GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx2g
 
 jobs:
@@ -109,7 +109,7 @@ jobs:
           retention-days: 30
 
       - name: Require a new immutable runtime tag
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -120,12 +120,12 @@ jobs:
           fi
 
       - name: Publish pinned iOS runtime
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RUNTIME_RELEASE_TAG }}
           target_commitish: ${{ github.sha }}
-          name: M-Extension-Server embedded iOS runtime v9
+          name: M-Extension-Server embedded iOS runtime v10
           body: |
             Headless ShadowJar for Mangatan's on-device iOS Mihon bridge.
 
@@ -139,8 +139,8 @@ jobs:
             extension's own OkHttp client, preserving source headers, cookies,
             and interceptors for protected image hosts.
 
-            It also repairs variable interleaved junk inside proxied MPEG-TS
-            segments before those packets reach the media decoder.
+            Supports Anikku extension-lib 16 seasons, hosters and deferred
+            video resolution while retaining older anime extension APIs.
           files: |
             release/MExtensionServer-ios.jar
             release/SHA256SUMS

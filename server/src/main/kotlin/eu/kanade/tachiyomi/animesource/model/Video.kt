@@ -2,9 +2,11 @@ package eu.kanade.tachiyomi.animesource.model
 
 import android.net.Uri
 import eu.kanade.tachiyomi.network.ProgressListener
+import kotlinx.serialization.Serializable
 import okhttp3.Headers
 import rx.subjects.Subject
 
+@Serializable
 data class Track(
     val url: String,
     val lang: String,
@@ -19,6 +21,87 @@ open class Video(
     val subtitleTracks: List<Track> = emptyList(),
     val audioTracks: List<Track> = emptyList(),
 ) : ProgressListener {
+    val videoTitle: String get() = quality
+    var resolution: Int? = null
+        private set
+    var bitrate: Int? = null
+        private set
+    var preferred: Boolean = false
+        private set
+    var timestamps: List<TimeStamp> = emptyList()
+        private set
+    var mpvArgs: List<Pair<String, String>> = emptyList()
+        private set
+    var ffmpegStreamArgs: List<Pair<String, String>> = emptyList()
+        private set
+    var ffmpegVideoArgs: List<Pair<String, String>> = emptyList()
+        private set
+    var internalData: String = ""
+        private set
+    var initialized: Boolean = false
+        private set
+
+    // Extension-lib 16 constructor, alongside the original lib 14/15 ABI.
+    constructor(
+        videoUrl: String = "",
+        videoTitle: String = "",
+        resolution: Int? = null,
+        bitrate: Int? = null,
+        headers: Headers? = null,
+        preferred: Boolean = false,
+        subtitleTracks: List<Track> = emptyList(),
+        audioTracks: List<Track> = emptyList(),
+        timestamps: List<TimeStamp> = emptyList(),
+        mpvArgs: List<Pair<String, String>> = emptyList(),
+        ffmpegStreamArgs: List<Pair<String, String>> = emptyList(),
+        ffmpegVideoArgs: List<Pair<String, String>> = emptyList(),
+        internalData: String = "",
+        initialized: Boolean = false,
+    ) : this(videoUrl, videoTitle, videoUrl, headers, subtitleTracks, audioTracks) {
+        this.resolution = resolution
+        this.bitrate = bitrate
+        this.preferred = preferred
+        this.timestamps = timestamps
+        this.mpvArgs = mpvArgs
+        this.ffmpegStreamArgs = ffmpegStreamArgs
+        this.ffmpegVideoArgs = ffmpegVideoArgs
+        this.internalData = internalData
+        this.initialized = initialized
+    }
+
+    fun copy(
+        videoUrl: String = this.videoUrl.orEmpty(),
+        videoTitle: String = this.videoTitle,
+        resolution: Int? = this.resolution,
+        bitrate: Int? = this.bitrate,
+        headers: Headers? = this.headers,
+        preferred: Boolean = this.preferred,
+        subtitleTracks: List<Track> = this.subtitleTracks,
+        audioTracks: List<Track> = this.audioTracks,
+        timestamps: List<TimeStamp> = this.timestamps,
+        mpvArgs: List<Pair<String, String>> = this.mpvArgs,
+        ffmpegStreamArgs: List<Pair<String, String>> = this.ffmpegStreamArgs,
+        ffmpegVideoArgs: List<Pair<String, String>> = this.ffmpegVideoArgs,
+        internalData: String = this.internalData,
+        initialized: Boolean = this.initialized,
+    ): Video =
+        Video(
+            videoUrl,
+            videoTitle,
+            resolution,
+            bitrate,
+            headers,
+            preferred,
+            subtitleTracks,
+            audioTracks,
+            timestamps,
+            mpvArgs,
+            ffmpegStreamArgs,
+            ffmpegVideoArgs,
+            internalData,
+            initialized,
+        )
+
     @Suppress("UNUSED_PARAMETER")
     constructor(
         url: String,
@@ -108,6 +191,7 @@ open class Video(
     }
 
     companion object {
+        const val MPV_ARGS_TAG = "ANIYOMI_MPV_ARGS"
         const val QUEUE = 0
         const val LOAD_VIDEO = 1
         const val DOWNLOAD_IMAGE = 2
