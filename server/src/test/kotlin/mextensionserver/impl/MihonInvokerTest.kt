@@ -23,6 +23,25 @@ import kotlin.test.assertTrue
 
 class MihonInvokerTest {
     @Test
+    fun `normalizes same-origin anime URLs and repeated extension fragments`() {
+        assertEquals(
+            "/anime/one-piece-odmau#1642",
+            MihonInvoker.normalizeAnimeUrl(
+                "https://anichi.to",
+                "https://anichi.to/anime/one-piece-odmau#1642#1642#1642",
+            ),
+        )
+        assertEquals(
+            "/anime/one-piece-odmau#1642",
+            MihonInvoker.normalizeAnimeUrl("https://anichi.to", "/anime/one-piece-odmau#1642#1642"),
+        )
+        assertEquals(
+            "https://external.example/watch/1",
+            MihonInvoker.normalizeAnimeUrl("https://anichi.to", "https://external.example/watch/1"),
+        )
+    }
+
+    @Test
     fun `reports stable package metadata for local APK imports`() {
         val jar = createTempFile(prefix = "mextensionserver-test-", suffix = ".jar").toFile()
         val packageInfo =

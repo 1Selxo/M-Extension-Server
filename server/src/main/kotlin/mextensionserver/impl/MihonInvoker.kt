@@ -40,6 +40,7 @@ import mextensionserver.model.MangaResponse
 import mextensionserver.model.toJAnime
 import mextensionserver.model.toJChapter
 import mextensionserver.model.toJManga
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 
@@ -546,7 +547,8 @@ object MihonInvoker {
         }
 
         return runBlocking {
-            val detailedAnime = source.getAnimeDetails(animeData.toSAnime())
+            val detailedAnime = source.getAnimeDetails(animeData.toSAnime(source))
+            detailedAnime.url = normalizeAnimeUrl(source.baseUrl, detailedAnime.url)
             detailedAnime.toJAnime()
         }
     }
@@ -561,7 +563,7 @@ object MihonInvoker {
         if (source !is AnimeHttpSource) {
             throw IllegalArgumentException("Source must be AnimeHttpSource for getAnimeUrl")
         }
-        return source.getAnimeUrl(animeData.toSAnime())
+        return source.getAnimeUrl(animeData.toSAnime(source))
     }
 
     private fun invokeGetEpisodeList(
@@ -577,7 +579,7 @@ object MihonInvoker {
         }
 
         return runBlocking {
-            val episodes = source.getEpisodeList(animeData.toSAnime())
+            val episodes = source.getEpisodeList(animeData.toSAnime(source))
             episodes
         }
     }
@@ -592,7 +594,7 @@ object MihonInvoker {
         if (source !is AnimeHttpSource) {
             throw IllegalArgumentException("Source must be AnimeHttpSource for getEpisodeUrl")
         }
-        return source.getEpisodeUrl(episodeData.toSEpisode())
+        return source.getEpisodeUrl(episodeData.toSEpisode(source))
     }
 
     private fun invokeGetVideoList(
@@ -608,7 +610,7 @@ object MihonInvoker {
         }
 
         return runBlocking {
-            val videos = source.getVideoList(episodeData.toSEpisode())
+            val videos = source.getVideoList(episodeData.toSEpisode(source))
             videos.map { MihonVideoProxy.proxy(source, it) }
         }
     }
@@ -641,9 +643,9 @@ object MihonInvoker {
             MihonMetadataCache.restore(source, chapter)
         }
 
-    private fun AnimeData.toSAnime(): SAnime =
+    private fun AnimeData.toSAnime(source: AnimeHttpSource): SAnime =
         SAnime.create().also { anime ->
-            anime.url = url ?: ""
+            anime.url = normalizeAnimeUrl(source.baseUrl, url ?: "")
             anime.title = title ?: ""
             anime.artist = artist
             anime.author = author
@@ -654,14 +656,41 @@ object MihonInvoker {
             anime.initialized = initialized ?: false
         }
 
-    private fun EpisodeData.toSEpisode(): SEpisode =
+    private fun EpisodeData.toSEpisode(source: AnimeHttpSource): SEpisode =
         SEpisode.create().also { episode ->
-            episode.url = url ?: ""
+            episode.url = normalizeAnimeUrl(source.baseUrl, url ?: "")
             episode.name = name ?: ""
             episode.date_upload = date_upload ?: 0L
             episode.episode_number = episode_number ?: 0f
             episode.scanlator = scanlator
         }
+
+    internal fun normalizeAnimeUrl(
+        baseUrl: String,
+        url: String,
+    ): String {
+        val parsed = url.toHttpUrlOrNull()
+        val base = baseUrl.toHttpUrlOrNull()
+        val relative =
+            if (parsed != null && base != null && parsed.host.equals(base.host, ignoreCase = true)) {
+                buildString {
+                    append(parsed.encodedPath)
+                    parsed.encodedQuery?.let { append('?').append(it) }
+                    parsed.encodedFragment?.let { append('#').append(it) }
+                }
+            } else {
+                url
+            }
+        val hash = relative.indexOf('#')
+        if (hash < 0) return relative
+        val prefix = relative.substring(0, hash)
+        val parts = relative.substring(hash + 1).split('#')
+        return if (parts.size > 1 && parts.all { it == parts.first() }) {
+            "$prefix#${parts.first()}"
+        } else {
+            relative
+        }
+    }
 
     private fun invokePreferencesAnime(source: AnimeCatalogueSource): MutableList<Map<String, Any>> {
         val preferences = mutableListOf<Map<String, Any>>()

@@ -10,6 +10,7 @@ package eu.kanade.tachiyomi.network
 
 import android.content.Context
 import eu.kanade.tachiyomi.network.interceptor.CloudflareInterceptor
+import eu.kanade.tachiyomi.network.interceptor.MegaPlayCompatInterceptor
 import eu.kanade.tachiyomi.network.interceptor.UncaughtExceptionInterceptor
 import eu.kanade.tachiyomi.network.interceptor.UserAgentInterceptor
 import okhttp3.Cache
@@ -30,6 +31,7 @@ class NetworkHelper(
                 .addInterceptor(UncaughtExceptionInterceptor())
                 .addInterceptor(UserAgentInterceptor(::defaultUserAgentProvider))
                 .addInterceptor(CloudflareInterceptor())
+                .addInterceptor(MegaPlayCompatInterceptor())
                 .connectTimeout(30, TimeUnit.SECONDS)
                 .readTimeout(30, TimeUnit.SECONDS)
                 .callTimeout(2, TimeUnit.MINUTES)
