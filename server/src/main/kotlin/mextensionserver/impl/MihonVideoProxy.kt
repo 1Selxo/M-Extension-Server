@@ -44,6 +44,7 @@ internal object MihonVideoProxy {
         val client: OkHttpClient,
         val url: HttpUrl,
         val headers: Headers,
+        val mediaSuffix: String,
     )
 
     private val loopbackClient =
@@ -138,8 +139,9 @@ internal object MihonVideoProxy {
             }
         val token =
             synchronized(lock) {
+                val mediaSuffix = suffixHint?.takeIf { it.isNotBlank() } ?: target.mediaFileSuffix()
                 tokensByKey[key]?.let { existingToken ->
-                    entriesByToken[existingToken] = Entry(key, client, target, headers)
+                    entriesByToken[existingToken] = Entry(key, client, target, headers, mediaSuffix)
                     return@synchronized existingToken
                 }
 
@@ -151,7 +153,7 @@ internal object MihonVideoProxy {
                 }
 
                 UUID.randomUUID().toString().also { newToken ->
-                    entriesByToken[newToken] = Entry(key, client, target, headers)
+                    entriesByToken[newToken] = Entry(key, client, target, headers, mediaSuffix)
                     tokensByKey[key] = newToken
                 }
             }
@@ -235,16 +237,26 @@ internal object MihonVideoProxy {
                 )
             }
 
-            if (response.isSuccessful && entry.url.isLoopback() && contentType.contains("mp2t", ignoreCase = true)) {
+            val startsAtZero = range.isNullOrBlank() || range.trim().equals("bytes=0-", ignoreCase = true)
+            val isTransportStream =
+                entry.mediaSuffix.equals(".ts", ignoreCase = true) ||
+                    contentType.contains("mp2t", ignoreCase = true)
+            if (response.isSuccessful && startsAtZero && isTransportStream) {
                 val bytes = body.bytes()
                 val repaired = MpegTsSanitizer.repair(bytes)
                 response.close()
+                val transformed = repaired !== bytes
                 return VideoData(
-                    statusCode = response.code,
-                    contentType = contentType,
+                    statusCode = if (transformed) 200 else response.code,
+                    contentType = if (transformed) "video/mp2t" else contentType,
                     stream = ByteArrayInputStream(repaired),
                     contentLength = repaired.size.toLong(),
-                    responseHeaders = responseHeaders,
+                    responseHeaders =
+                        if (transformed) {
+                            responseHeaders.filterKeys { it.equals("Cache-Control", ignoreCase = true) }
+                        } else {
+                            responseHeaders
+                        },
                 )
             }
 
@@ -370,7 +382,7 @@ internal object MihonVideoProxy {
         token: String,
         target: HttpUrl,
         suffixHint: String?,
-    ): String = "http://127.0.0.1:$currentPort/video/$token${target.mediaFileSuffix().ifEmpty { suffixHint.orEmpty() }}"
+    ): String = "http://127.0.0.1:$currentPort/video/$token${suffixHint?.takeIf { it.isNotBlank() } ?: target.mediaFileSuffix()}"
 
     private fun String.mediaFileSuffix(): String = toHttpUrlOrNull()?.mediaFileSuffix().orEmpty()
 

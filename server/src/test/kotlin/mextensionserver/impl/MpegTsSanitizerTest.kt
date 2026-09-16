@@ -41,6 +41,22 @@ class MpegTsSanitizerTest {
     }
 
     @Test
+    fun `strips an image prefix and partial packet from a transport stream`() {
+        val png = byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47) + ByteArray(66)
+        val partialPacket = ByteArray(182) { 0x2A }
+        val stream = List(6) { packet(it, 256) }.flatten().toByteArray()
+
+        assertContentEquals(stream, MpegTsSanitizer.repair(png + partialPacket + stream))
+    }
+
+    @Test
+    fun `does not treat a png as a transport stream`() {
+        val input = byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47) + ByteArray(2048)
+
+        assertSame(input, MpegTsSanitizer.repair(input))
+    }
+
+    @Test
     fun `leaves unrecognized payloads unchanged`() {
         val input = ByteArray(2048) { it.toByte() }
 

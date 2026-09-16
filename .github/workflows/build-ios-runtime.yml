@@ -29,7 +29,7 @@ permissions:
   contents: write
 
 env:
-  RUNTIME_RELEASE_TAG: ios-runtime-v10
+  RUNTIME_RELEASE_TAG: ios-runtime-v11
   GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx2g
 
 jobs:
@@ -125,7 +125,7 @@ jobs:
         with:
           tag_name: ${{ env.RUNTIME_RELEASE_TAG }}
           target_commitish: ${{ github.sha }}
-          name: M-Extension-Server embedded iOS runtime v10
+          name: M-Extension-Server embedded iOS runtime v11
           body: |
             Headless ShadowJar for Mangatan's on-device iOS Mihon bridge.
 
@@ -141,6 +141,16 @@ jobs:
 
             Supports Anikku extension-lib 16 seasons, hosters and deferred
             video resolution while retaining older anime extension APIs.
+
+            It also repairs variable interleaved junk inside proxied MPEG-TS
+            segments before those packets reach the media decoder.
+
+            This version adds compatibility for MegaPlay's encrypted stream
+            metadata and normalizes legacy absolute Anichi library URLs.
+
+            It now removes image/error prefixes from externally hosted HLS
+            transport-stream segments, including Anichi and AnimeKai streams,
+            before forwarding them to Mangatan.
           files: |
             release/MExtensionServer-ios.jar
             release/SHA256SUMS

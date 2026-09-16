@@ -7,19 +7,32 @@ internal object MpegTsSanitizer {
     private const val MAX_RESYNC_DISTANCE = 8 * 1024
 
     fun repair(data: ByteArray): ByteArray {
-        if (data.size < PACKET_SIZE * MIN_SYNC_RUN || data[0] != SYNC_BYTE) return data
-        if (isAligned(data)) return data
+        if (data.size < PACKET_SIZE * MIN_SYNC_RUN) return data
+
+        // Some extension CDNs prepend a complete 1x1 PNG (and sometimes the
+        // tail of a partial TS packet) before every otherwise-valid segment.
+        // Find the first stable packet grid instead of letting media players
+        // identify the whole response as an image.
+        val firstSync =
+            if (data[0] == SYNC_BYTE) {
+                0
+            } else {
+                findNextSyncRun(data, 0)
+            }
+        if (firstSync < 0) return data
+        val input = if (firstSync == 0) data else data.copyOfRange(firstSync, data.size)
+        if (isAligned(input)) return input
 
         val packets = mutableListOf<ByteArray>()
         val discardUntilPayloadStart = mutableSetOf<Int>()
         var cursor = 0
-        var repaired = false
-        while (cursor + PACKET_SIZE <= data.size) {
-            val hasCompleteNextPacket = cursor + (PACKET_SIZE * 2) <= data.size
-            if (data[cursor] == SYNC_BYTE &&
-                (!hasCompleteNextPacket || data[cursor + PACKET_SIZE] == SYNC_BYTE)
+        var repaired = firstSync > 0
+        while (cursor + PACKET_SIZE <= input.size) {
+            val hasCompleteNextPacket = cursor + (PACKET_SIZE * 2) <= input.size
+            if (input[cursor] == SYNC_BYTE &&
+                (!hasCompleteNextPacket || input[cursor + PACKET_SIZE] == SYNC_BYTE)
             ) {
-                val packet = data.copyOfRange(cursor, cursor + PACKET_SIZE)
+                val packet = input.copyOfRange(cursor, cursor + PACKET_SIZE)
                 val pid = packet.pid()
                 if (pid !in discardUntilPayloadStart || packet.isPayloadStart()) {
                     discardUntilPayloadStart.remove(pid)
@@ -35,12 +48,12 @@ internal object MpegTsSanitizer {
             // preserve that packet merely because its leading sync byte is
             // intact. Remove its whole PES unit so a truncated AAC frame is
             // never forwarded to the decoder.
-            if (data[cursor] == SYNC_BYTE && cursor + 3 < data.size) {
-                val damagedPid = data.pidAt(cursor)
+            if (input[cursor] == SYNC_BYTE && cursor + 3 < input.size) {
+                val damagedPid = input.pidAt(cursor)
                 discardCurrentPes(packets, damagedPid)
                 discardUntilPayloadStart += damagedPid
             }
-            val nextSync = findNextSyncRun(data, cursor + 1)
+            val nextSync = findNextSyncRun(input, cursor + 1)
             if (nextSync < 0) return data
             repaired = true
             cursor = nextSync

@@ -75,7 +75,7 @@ class MihonVideoProxyTest {
         assertTrue(proxyUrl.startsWith("http://127.0.0.1:39642/video/"))
         assertTrue(proxyUrl.endsWith(".m3u8"))
         assertTrue(manifest.lineSequence().any { it.contains("URI=\"/video/") && it.contains(".m3u8\"") })
-        assertTrue(manifest.lineSequence().any { it.contains("URI=\"/video/") && it.contains(".bin\"") })
+        assertTrue(manifest.lineSequence().any { it.contains("URI=\"/video/") && it.contains(".key\"") })
         assertTrue(manifest.lineSequence().any { it.startsWith("/video/") && it.endsWith(".ts") })
         assertFalse(manifest.contains("video.test"))
         assertFalse(manifest.contains("keys.test"))
@@ -120,6 +120,39 @@ class MihonVideoProxyTest {
         assertEquals("bytes 4-7/8", response.responseHeaders["Content-Range"])
         assertEquals(bytes.size.toLong(), response.contentLength)
         assertContentEquals(bytes, response.stream.use { it.readBytes() })
+    }
+
+    @Test
+    fun `repairs externally hosted transport segments with an image prefix`() {
+        val png = byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47) + ByteArray(66)
+        val partialPacket = ByteArray(182) { 0x2A }
+        val stream = List(6) { tsPacket(it) }.flatten().toByteArray()
+        val client =
+            OkHttpClient
+                .Builder()
+                .addInterceptor { chain ->
+                    Response
+                        .Builder()
+                        .request(chain.request())
+                        .protocol(Protocol.HTTP_1_1)
+                        .code(206)
+                        .message("Partial Content")
+                        .header("Content-Range", "bytes 0-${png.size + partialPacket.size + stream.size - 1}/*")
+                        .body((png + partialPacket + stream).toResponseBody("image/png".toMediaType()))
+                        .build()
+                }.build()
+        MihonVideoProxy.configure(39642)
+        val proxyUrl =
+            assertNotNull(
+                MihonVideoProxy.register(client, "https://video.test/segment", suffixHint = ".ts"),
+            )
+
+        val response = assertNotNull(MihonVideoProxy.fetch(proxyUrl.token(), "bytes=0-"))
+
+        assertEquals(200, response.statusCode)
+        assertEquals("video/mp2t", response.contentType)
+        assertFalse(response.responseHeaders.containsKey("Content-Range"))
+        assertContentEquals(stream, response.stream.use { it.readBytes() })
     }
 
     @Test
@@ -227,4 +260,13 @@ class MihonVideoProxyTest {
             .findAll(this)
             .map { it.groupValues[1] }
             .toSet()
+
+    private fun tsPacket(seed: Int): List<Byte> =
+        ByteArray(188) { index -> (seed + index).toByte() }
+            .apply {
+                this[0] = 0x47
+                this[1] = 0x41
+                this[2] = 0x00
+                this[3] = 0x10
+            }.toList()
 }
