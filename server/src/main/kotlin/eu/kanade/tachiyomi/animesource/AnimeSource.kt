@@ -11,7 +11,7 @@ import rx.Observable
  * A basic interface for creating a source. It could be an online source, a local source, etc.
  */
 interface AnimeSource {
-    suspend fun getSeasonList(anime: SAnime): List<SAnime> = throw UnsupportedOperationException("Seasons are not supported")
+    suspend fun getSeasonList(anime: SAnime): List<SAnime> = emptyList()
 
     suspend fun getHosterList(episode: SEpisode): List<Hoster> = throw UnsupportedOperationException("Hosters are not supported")
 

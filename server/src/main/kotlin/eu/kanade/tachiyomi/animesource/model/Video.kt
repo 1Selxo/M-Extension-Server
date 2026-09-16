@@ -41,6 +41,10 @@ open class Video(
     var initialized: Boolean = false
         private set
 
+    /** Extension-lib 16's page URL property; [url] remains the ABI alias. */
+    val videoPageUrl: String
+        get() = url
+
     // Extension-lib 16 constructor, alongside the original lib 14/15 ABI.
     constructor(
         videoUrl: String = "",
@@ -57,7 +61,8 @@ open class Video(
         ffmpegVideoArgs: List<Pair<String, String>> = emptyList(),
         internalData: String = "",
         initialized: Boolean = false,
-    ) : this(videoUrl, videoTitle, videoUrl, headers, subtitleTracks, audioTracks) {
+        videoPageUrl: String = "",
+    ) : this(videoPageUrl, videoTitle, videoUrl, headers, subtitleTracks, audioTracks) {
         this.resolution = resolution
         this.bitrate = bitrate
         this.preferred = preferred
@@ -84,6 +89,7 @@ open class Video(
         ffmpegVideoArgs: List<Pair<String, String>> = this.ffmpegVideoArgs,
         internalData: String = this.internalData,
         initialized: Boolean = this.initialized,
+        videoPageUrl: String = this.videoPageUrl,
     ): Video =
         Video(
             videoUrl,
@@ -100,6 +106,7 @@ open class Video(
             ffmpegVideoArgs,
             internalData,
             initialized,
+            videoPageUrl,
         )
 
     @Suppress("UNUSED_PARAMETER")

@@ -33,17 +33,21 @@ abstract class AnimeHttpSource : AnimeCatalogueSource {
 
     protected open fun seasonListRequest(anime: SAnime): Request = GET(baseUrl + anime.url, headers)
 
-    protected open fun seasonListParse(response: Response): List<SAnime> = throw UnsupportedOperationException("Seasons are not supported")
+    protected open fun seasonListParse(response: Response): List<SAnime> = emptyList()
 
     override suspend fun getHosterList(episode: SEpisode): List<Hoster> =
-        client.newCall(hosterListRequest(episode)).awaitSuccess().use(::hosterListParse)
+        client.newCall(hosterListRequest(episode)).awaitSuccess().use {
+            hosterListParse(it).sortHosters()
+        }
 
     protected open fun hosterListRequest(episode: SEpisode): Request = GET(baseUrl + episode.url, headers)
 
     protected open fun hosterListParse(response: Response): List<Hoster> = throw UnsupportedOperationException("Hosters are not supported")
 
     override suspend fun getVideoList(hoster: Hoster): List<Video> =
-        client.newCall(videoListRequest(hoster)).awaitSuccess().use { videoListParse(it, hoster) }
+        client.newCall(videoListRequest(hoster)).awaitSuccess().use {
+            videoListParse(it, hoster).sortVideos()
+        }
 
     protected open fun videoListRequest(hoster: Hoster): Request = GET(hoster.hosterUrl, headers)
 

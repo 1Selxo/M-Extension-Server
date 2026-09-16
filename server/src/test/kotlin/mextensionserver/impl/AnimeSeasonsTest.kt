@@ -60,6 +60,18 @@ class AnimeSeasonsTest {
         assertTrue(resolved.preferred)
         assertEquals(720, resolved.resolution)
         assertEquals("legacy", Video("page", "legacy", "stream").quality)
+        val modern =
+            Video(
+                videoUrl = "https://media.test/stream",
+                videoTitle = "1080p",
+                videoPageUrl = "https://source.test/page",
+            )
+        assertEquals("https://source.test/page", modern.url)
+        assertEquals("https://source.test/page", modern.videoPageUrl)
+        assertEquals(
+            "https://source.test/other",
+            modern.copy(videoPageUrl = "https://source.test/other").videoPageUrl,
+        )
     }
 
     @Test
