@@ -12,102 +12,57 @@ data class Track(
     val lang: String,
 )
 
-open class Video(
-    val url: String = "",
-    val quality: String = "",
-    var videoUrl: String? = null,
+data class Video(
+    var videoUrl: String = "",
+    val videoTitle: String = "",
+    val resolution: Int? = null,
+    val bitrate: Int? = null,
     val headers: Headers? = null,
-    // "url", "language-label-2", "url2", "language-label-2"
+    val preferred: Boolean = false,
     val subtitleTracks: List<Track> = emptyList(),
     val audioTracks: List<Track> = emptyList(),
+    val timestamps: List<TimeStamp> = emptyList(),
+    val mpvArgs: List<Pair<String, String>> = emptyList(),
+    val ffmpegStreamArgs: List<Pair<String, String>> = emptyList(),
+    val ffmpegVideoArgs: List<Pair<String, String>> = emptyList(),
+    val internalData: String = "",
+    val initialized: Boolean = false,
 ) : ProgressListener {
-    val videoTitle: String get() = quality
-    var resolution: Int? = null
-        private set
-    var bitrate: Int? = null
-        private set
-    var preferred: Boolean = false
-        private set
-    var timestamps: List<TimeStamp> = emptyList()
-        private set
-    var mpvArgs: List<Pair<String, String>> = emptyList()
-        private set
-    var ffmpegStreamArgs: List<Pair<String, String>> = emptyList()
-        private set
-    var ffmpegVideoArgs: List<Pair<String, String>> = emptyList()
-        private set
-    var internalData: String = ""
-        private set
-    var initialized: Boolean = false
-        private set
+    /** Compatibility aliases retained for extension-lib 14/15. */
+    val quality: String get() = videoTitle
+    val url: String get() = videoPageUrl
+    val videoPageUrl: String get() = legacyVideoPageUrl
+    private var legacyVideoPageUrl: String = ""
 
-    /** Extension-lib 16's page URL property; [url] remains the ABI alias. */
-    val videoPageUrl: String
-        get() = url
-
-    // Extension-lib 16 constructor, alongside the original lib 14/15 ABI.
     constructor(
-        videoUrl: String = "",
-        videoTitle: String = "",
-        resolution: Int? = null,
-        bitrate: Int? = null,
+        url: String,
+        quality: String,
+        videoUrl: String?,
         headers: Headers? = null,
-        preferred: Boolean = false,
         subtitleTracks: List<Track> = emptyList(),
         audioTracks: List<Track> = emptyList(),
-        timestamps: List<TimeStamp> = emptyList(),
-        mpvArgs: List<Pair<String, String>> = emptyList(),
-        ffmpegStreamArgs: List<Pair<String, String>> = emptyList(),
-        ffmpegVideoArgs: List<Pair<String, String>> = emptyList(),
-        internalData: String = "",
-        initialized: Boolean = false,
-        videoPageUrl: String = "",
-    ) : this(videoPageUrl, videoTitle, videoUrl, headers, subtitleTracks, audioTracks) {
-        this.resolution = resolution
-        this.bitrate = bitrate
-        this.preferred = preferred
-        this.timestamps = timestamps
-        this.mpvArgs = mpvArgs
-        this.ffmpegStreamArgs = ffmpegStreamArgs
-        this.ffmpegVideoArgs = ffmpegVideoArgs
-        this.internalData = internalData
-        this.initialized = initialized
+    ) : this(
+        videoUrl = videoUrl ?: "null",
+        videoTitle = quality,
+        headers = headers,
+        subtitleTracks = subtitleTracks,
+        audioTracks = audioTracks,
+    ) {
+        legacyVideoPageUrl = url
     }
 
-    fun copy(
-        videoUrl: String = this.videoUrl.orEmpty(),
-        videoTitle: String = this.videoTitle,
-        resolution: Int? = this.resolution,
-        bitrate: Int? = this.bitrate,
-        headers: Headers? = this.headers,
-        preferred: Boolean = this.preferred,
-        subtitleTracks: List<Track> = this.subtitleTracks,
-        audioTracks: List<Track> = this.audioTracks,
-        timestamps: List<TimeStamp> = this.timestamps,
-        mpvArgs: List<Pair<String, String>> = this.mpvArgs,
-        ffmpegStreamArgs: List<Pair<String, String>> = this.ffmpegStreamArgs,
-        ffmpegVideoArgs: List<Pair<String, String>> = this.ffmpegVideoArgs,
-        internalData: String = this.internalData,
-        initialized: Boolean = this.initialized,
-        videoPageUrl: String = this.videoPageUrl,
+    fun copyForProxy(
+        videoUrl: String,
+        headers: Headers?,
+        subtitleTracks: List<Track>,
+        audioTracks: List<Track>,
     ): Video =
-        Video(
-            videoUrl,
-            videoTitle,
-            resolution,
-            bitrate,
-            headers,
-            preferred,
-            subtitleTracks,
-            audioTracks,
-            timestamps,
-            mpvArgs,
-            ffmpegStreamArgs,
-            ffmpegVideoArgs,
-            internalData,
-            initialized,
-            videoPageUrl,
-        )
+        copy(
+            videoUrl = videoUrl,
+            headers = headers,
+            subtitleTracks = subtitleTracks,
+            audioTracks = audioTracks,
+        ).also { it.legacyVideoPageUrl = legacyVideoPageUrl }
 
     @Suppress("UNUSED_PARAMETER")
     constructor(

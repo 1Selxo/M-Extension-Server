@@ -102,9 +102,8 @@ internal object MihonVideoProxy {
             deferredUrl
                 ?: video.videoUrl?.let { register(client, it, headers, suffixHint = video.url.mediaFileSuffix()) }
                 ?: video.videoUrl
-        return video.copy(
+        return video.copyForProxy(
             videoUrl = proxiedVideoUrl.orEmpty(),
-            videoPageUrl = video.videoPageUrl,
             headers = video.headers,
             subtitleTracks = video.subtitleTracks.map { proxyTrack(client, headers, it) },
             audioTracks = video.audioTracks.map { proxyTrack(client, headers, it) },
