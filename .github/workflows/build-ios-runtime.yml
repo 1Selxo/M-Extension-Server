@@ -109,7 +109,7 @@ jobs:
           retention-days: 30
 
       - name: Require a new immutable runtime tag
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -120,7 +120,7 @@ jobs:
           fi
 
       - name: Publish pinned iOS runtime
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RUNTIME_RELEASE_TAG }}
@@ -138,6 +138,9 @@ jobs:
             This runtime routes every HTTP extension poster through the
             extension's own OkHttp client, preserving source headers, cookies,
             and interceptors for protected image hosts.
+
+            Supports Anikku extension-lib 16 seasons, hosters and deferred
+            video resolution while retaining older anime extension APIs.
 
             It also repairs variable interleaved junk inside proxied MPEG-TS
             segments before those packets reach the media decoder.

@@ -3,6 +3,7 @@ package mextensionserver.impl
 import eu.kanade.tachiyomi.animesource.model.Track
 import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
+import kotlinx.coroutines.runBlocking
 import okhttp3.Headers
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -54,6 +55,14 @@ internal object MihonVideoProxy {
             .callTimeout(2, TimeUnit.MINUTES)
             .build()
 
+    private class DeferredVideo(
+        val source: AnimeHttpSource,
+        val video: Video,
+    ) {
+        var resolvedToken: String? = null
+    }
+
+    private val deferredVideos = LinkedHashMap<String, DeferredVideo>(16, 0.75f, true)
     private val lock = Any()
     private val entriesByToken = LinkedHashMap<String, Entry>(16, 0.75f, true)
     private val tokensByKey = mutableMapOf<String, String>()
@@ -69,18 +78,33 @@ internal object MihonVideoProxy {
     fun proxy(
         source: AnimeHttpSource,
         video: Video,
+        deferResolution: Boolean = false,
     ): Video {
         val client = source.client
         val headers =
             video.headers
                 ?: runCatching { source.headers }.getOrDefault(Headers.Builder().build())
+        val deferredUrl =
+            if (deferResolution && !video.initialized) {
+                require(port > 0) { "Video proxy is not running" }
+                val token = UUID.randomUUID().toString()
+                synchronized(lock) {
+                    while (deferredVideos.size >= MAX_ENTRIES) {
+                        deferredVideos.remove(deferredVideos.keys.first())
+                    }
+                    deferredVideos[token] = DeferredVideo(source, video)
+                }
+                "http://127.0.0.1:$port/video/$token"
+            } else {
+                null
+            }
         val proxiedVideoUrl =
-            video.videoUrl?.let { register(client, it, headers, suffixHint = video.url.mediaFileSuffix()) }
+            deferredUrl
+                ?: video.videoUrl?.let { register(client, it, headers, suffixHint = video.url.mediaFileSuffix()) }
                 ?: video.videoUrl
-        return Video(
-            url = video.url,
-            quality = video.quality,
-            videoUrl = proxiedVideoUrl,
+        return video.copy(
+            videoUrl = proxiedVideoUrl.orEmpty(),
+            videoPageUrl = video.videoPageUrl,
             headers = video.headers,
             subtitleTracks = video.subtitleTracks.map { proxyTrack(client, headers, it) },
             audioTracks = video.audioTracks.map { proxyTrack(client, headers, it) },
@@ -141,6 +165,29 @@ internal object MihonVideoProxy {
         range: String? = null,
     ): VideoData? {
         val registryToken = token.substringBefore('.')
+        val deferred = synchronized(lock) { deferredVideos[registryToken] }
+        if (deferred != null) {
+            // Resolve only the quality the player actually opens. In Jellyfin,
+            // resolving every quality eagerly starts multiple transcode sessions.
+            val resolved =
+                synchronized(deferred) {
+                    deferred.resolvedToken ?: run {
+                        val video = runBlocking { deferred.source.resolveVideo(deferred.video) }
+                        val url =
+                            requireNotNull(video?.videoUrl?.takeIf { it.isNotBlank() }) { "The extension could not resolve this video" }
+                        val proxied =
+                            requireNotNull(
+                                register(
+                                    deferred.source.client,
+                                    url,
+                                    video.headers ?: deferred.source.headers,
+                                ),
+                            ) { "Unsupported resolved video URL" }
+                        proxied.substringAfter("/video/").also { deferred.resolvedToken = it }
+                    }
+                }
+            return fetch(resolved, range)
+        }
         val entry = synchronized(lock) { entriesByToken[registryToken] } ?: return null
         val request =
             Request
@@ -347,6 +394,7 @@ internal object MihonVideoProxy {
 
     fun clear() {
         synchronized(lock) {
+            deferredVideos.clear()
             entriesByToken.clear()
             tokensByKey.clear()
         }

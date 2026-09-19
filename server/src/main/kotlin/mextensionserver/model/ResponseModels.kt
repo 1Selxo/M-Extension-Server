@@ -56,6 +56,9 @@ data class JAnime(
     val status: Int,
     val thumbnail_url: String?,
     val initialized: Boolean,
+    val fetch_type: String = "Episodes",
+    val season_number: Double = -1.0,
+    val background_url: String? = null,
 )
 
 data class JChapter(
@@ -125,6 +128,9 @@ fun SAnime.toJAnime(): JAnime =
         genre = runCatching { this.genre }.getOrNull(),
         status = runCatching { this.status }.getOrDefault(0),
         thumbnail_url = runCatching { this.thumbnail_url }.getOrNull(),
+        fetch_type = runCatching { fetch_type.name }.getOrDefault("Episodes"),
+        season_number = runCatching { season_number }.getOrDefault(-1.0),
+        background_url = runCatching { background_url }.getOrNull(),
         initialized = runCatching { this.initialized }.getOrDefault(false),
     )
 

@@ -101,6 +101,13 @@ object MihonInvoker {
             "getSearchAnime" -> invokeGetSearchAnime(source as AnimeCatalogueSource, data.page ?: 1, data.search ?: "", data.filterList)
             "getDetailsAnime" -> invokeGetDetailsAnime(source as AnimeCatalogueSource, data.animeData)
             "getAnimeUrl" -> invokeGetAnimeUrl(source as AnimeCatalogueSource, data.animeData)
+            "getSeasonList" ->
+                runBlocking {
+                    val anime = requireNotNull(data.animeData) { "animeData is required for getSeasonList" }
+                    val animeSource = source as? AnimeHttpSource
+                        ?: throw IllegalArgumentException("Source must be AnimeHttpSource for getSeasonList")
+                    animeSource.getSeasonList(anime.toSAnime(animeSource)).map { it.toJAnime() }
+                }
             "getEpisodeList" -> invokeGetEpisodeList(source as AnimeCatalogueSource, data.animeData)
             "getEpisodeUrl" -> invokeGetEpisodeUrl(source as AnimeCatalogueSource, data.episodeData)
             "getVideoList" -> invokeGetVideoList(source as AnimeCatalogueSource, data.episodeData)
@@ -610,8 +617,8 @@ object MihonInvoker {
         }
 
         return runBlocking {
-            val videos = source.getVideoList(episodeData.toSEpisode(source))
-            videos.map { MihonVideoProxy.proxy(source, it) }
+            val videos = AnimeVideoResolver.resolve(source, episodeData.toSEpisode(source))
+            videos.map { MihonVideoProxy.proxy(source, it, deferResolution = AnimeVideoResolver.hasHosters(source)) }
         }
     }
 
@@ -645,6 +652,11 @@ object MihonInvoker {
 
     private fun AnimeData.toSAnime(source: AnimeHttpSource): SAnime =
         SAnime.create().also { anime ->
+            anime.fetch_type = eu.kanade.tachiyomi.animesource.model.FetchType.entries
+                .firstOrNull { it.name == fetch_type }
+                ?: eu.kanade.tachiyomi.animesource.model.FetchType.Episodes
+            anime.season_number = season_number ?: -1.0
+            anime.background_url = background_url
             anime.url = normalizeAnimeUrl(source.baseUrl, url ?: "")
             anime.title = title ?: ""
             anime.artist = artist
@@ -663,6 +675,9 @@ object MihonInvoker {
             episode.date_upload = date_upload ?: 0L
             episode.episode_number = episode_number ?: 0f
             episode.scanlator = scanlator
+            episode.fillermark = fillermark ?: false
+            episode.summary = summary
+            episode.preview_url = preview_url
         }
 
     internal fun normalizeAnimeUrl(

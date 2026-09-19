@@ -3,6 +3,7 @@ package eu.kanade.tachiyomi.animesource.online
 import eu.kanade.tachiyomi.animesource.AnimeCatalogueSource
 import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
 import eu.kanade.tachiyomi.animesource.model.AnimesPage
+import eu.kanade.tachiyomi.animesource.model.Hoster
 import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
@@ -27,6 +28,40 @@ import java.security.MessageDigest
  */
 @Suppress("unused")
 abstract class AnimeHttpSource : AnimeCatalogueSource {
+    override suspend fun getSeasonList(anime: SAnime): List<SAnime> =
+        client.newCall(seasonListRequest(anime)).awaitSuccess().use(::seasonListParse)
+
+    protected open fun seasonListRequest(anime: SAnime): Request = GET(baseUrl + anime.url, headers)
+
+    protected open fun seasonListParse(response: Response): List<SAnime> = emptyList()
+
+    override suspend fun getHosterList(episode: SEpisode): List<Hoster> =
+        client.newCall(hosterListRequest(episode)).awaitSuccess().use {
+            hosterListParse(it).sortHosters()
+        }
+
+    protected open fun hosterListRequest(episode: SEpisode): Request = GET(baseUrl + episode.url, headers)
+
+    protected open fun hosterListParse(response: Response): List<Hoster> = throw UnsupportedOperationException("Hosters are not supported")
+
+    override suspend fun getVideoList(hoster: Hoster): List<Video> =
+        client.newCall(videoListRequest(hoster)).awaitSuccess().use {
+            videoListParse(it, hoster).sortVideos()
+        }
+
+    protected open fun videoListRequest(hoster: Hoster): Request = GET(hoster.hosterUrl, headers)
+
+    protected open fun videoListParse(
+        response: Response,
+        hoster: Hoster,
+    ): List<Video> = throw UnsupportedOperationException("Hosters are not supported")
+
+    open fun List<Hoster>.sortHosters(): List<Hoster> = this
+
+    open fun List<Video>.sortVideos(): List<Video> = sort()
+
+    open suspend fun resolveVideo(video: Video): Video? = video
+
     /**
      * Network service.
      */
