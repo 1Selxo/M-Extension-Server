@@ -24,9 +24,10 @@ open class Hoster(
         videoList: List<Video>? = this.videoList,
         internalData: String = this.internalData,
         lazy: Boolean = this.lazy,
-    ): Hoster = Hoster(hosterUrl, hosterName, videoList, internalData, lazy).also {
-        it.status = status
-    }
+    ): Hoster =
+        Hoster(hosterUrl, hosterName, videoList, internalData, lazy).also {
+            it.status = status
+        }
 
     companion object {
         const val NO_HOSTER_LIST = "no_hoster_list"

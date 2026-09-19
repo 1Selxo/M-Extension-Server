@@ -104,8 +104,9 @@ object MihonInvoker {
             "getSeasonList" ->
                 runBlocking {
                     val anime = requireNotNull(data.animeData) { "animeData is required for getSeasonList" }
-                    val animeSource = source as? AnimeHttpSource
-                        ?: throw IllegalArgumentException("Source must be AnimeHttpSource for getSeasonList")
+                    val animeSource =
+                        source as? AnimeHttpSource
+                            ?: throw IllegalArgumentException("Source must be AnimeHttpSource for getSeasonList")
                     animeSource.getSeasonList(anime.toSAnime(animeSource)).map { it.toJAnime() }
                 }
             "getEpisodeList" -> invokeGetEpisodeList(source as AnimeCatalogueSource, data.animeData)
