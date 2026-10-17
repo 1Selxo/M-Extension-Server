@@ -107,7 +107,9 @@ object MihonInvoker {
                     val animeSource =
                         source as? AnimeHttpSource
                             ?: throw IllegalArgumentException("Source must be AnimeHttpSource for getSeasonList")
-                    animeSource.getSeasonList(anime.toSAnime(animeSource)).map { it.toJAnime() }
+                    withAbsoluteUrlFallback { absolute ->
+                        animeSource.getSeasonList(anime.toSAnime(animeSource, absolute))
+                    }.map { it.toJAnime() }
                 }
             "getEpisodeList" -> invokeGetEpisodeList(source as AnimeCatalogueSource, data.animeData)
             "getEpisodeUrl" -> invokeGetEpisodeUrl(source as AnimeCatalogueSource, data.episodeData)
@@ -555,8 +557,13 @@ object MihonInvoker {
         }
 
         return runBlocking {
-            val detailedAnime = source.getAnimeDetails(animeData.toSAnime(source))
-            detailedAnime.url = normalizeAnimeUrl(source.baseUrl, detailedAnime.url)
+            val detailedAnime =
+                withAbsoluteUrlFallback { absolute ->
+                    source.getAnimeDetails(animeData.toSAnime(source, absolute))
+                }
+            // Return the extension's own URL, as Mihon stores it. Jellyfin, for
+            // example, needs its absolute URLs back on later calls.
+            detailedAnime.url = collapseRepeatedFragments(detailedAnime.url)
             detailedAnime.toJAnime()
         }
     }
@@ -571,7 +578,7 @@ object MihonInvoker {
         if (source !is AnimeHttpSource) {
             throw IllegalArgumentException("Source must be AnimeHttpSource for getAnimeUrl")
         }
-        return source.getAnimeUrl(animeData.toSAnime(source))
+        return withAbsoluteUrlFallback { absolute -> source.getAnimeUrl(animeData.toSAnime(source, absolute)) }
     }
 
     private fun invokeGetEpisodeList(
@@ -587,8 +594,9 @@ object MihonInvoker {
         }
 
         return runBlocking {
-            val episodes = source.getEpisodeList(animeData.toSAnime(source))
-            episodes
+            withAbsoluteUrlFallback { absolute ->
+                source.getEpisodeList(animeData.toSAnime(source, absolute))
+            }
         }
     }
 
@@ -602,7 +610,7 @@ object MihonInvoker {
         if (source !is AnimeHttpSource) {
             throw IllegalArgumentException("Source must be AnimeHttpSource for getEpisodeUrl")
         }
-        return source.getEpisodeUrl(episodeData.toSEpisode(source))
+        return withAbsoluteUrlFallback { absolute -> source.getEpisodeUrl(episodeData.toSEpisode(source, absolute)) }
     }
 
     private fun invokeGetVideoList(
@@ -618,7 +626,10 @@ object MihonInvoker {
         }
 
         return runBlocking {
-            val videos = AnimeVideoResolver.resolve(source, episodeData.toSEpisode(source))
+            val videos =
+                withAbsoluteUrlFallback { absolute ->
+                    AnimeVideoResolver.resolve(source, episodeData.toSEpisode(source, absolute))
+                }
             videos.map { MihonVideoProxy.proxy(source, it, deferResolution = AnimeVideoResolver.hasHosters(source)) }
         }
     }
@@ -651,14 +662,17 @@ object MihonInvoker {
             MihonMetadataCache.restore(source, chapter)
         }
 
-    private fun AnimeData.toSAnime(source: AnimeHttpSource): SAnime =
+    private fun AnimeData.toSAnime(
+        source: AnimeHttpSource,
+        absolute: Boolean = false,
+    ): SAnime =
         SAnime.create().also { anime ->
             anime.fetch_type = eu.kanade.tachiyomi.animesource.model.FetchType.entries
                 .firstOrNull { it.name == fetch_type }
                 ?: eu.kanade.tachiyomi.animesource.model.FetchType.Episodes
             anime.season_number = season_number ?: -1.0
             anime.background_url = background_url
-            anime.url = normalizeAnimeUrl(source.baseUrl, url ?: "")
+            anime.url = inputAnimeUrl(source.baseUrl, url ?: "", absolute)
             anime.title = title ?: ""
             anime.artist = artist
             anime.author = author
@@ -669,9 +683,12 @@ object MihonInvoker {
             anime.initialized = initialized ?: false
         }
 
-    private fun EpisodeData.toSEpisode(source: AnimeHttpSource): SEpisode =
+    private fun EpisodeData.toSEpisode(
+        source: AnimeHttpSource,
+        absolute: Boolean = false,
+    ): SEpisode =
         SEpisode.create().also { episode ->
-            episode.url = normalizeAnimeUrl(source.baseUrl, url ?: "")
+            episode.url = inputAnimeUrl(source.baseUrl, url ?: "", absolute)
             episode.name = name ?: ""
             episode.date_upload = date_upload ?: 0L
             episode.episode_number = episode_number ?: 0f
@@ -680,6 +697,31 @@ object MihonInvoker {
             episode.summary = summary
             episode.preview_url = preview_url
         }
+
+    /**
+     * Runs [block] with relative anime URLs first and, if the extension
+     * rejects one for lacking a scheme, once more with absolute URLs.
+     *
+     * Most extensions store paths and prefix `baseUrl` themselves, so a
+     * same-origin absolute URL is reduced to its path. Some, such as Jellyfin,
+     * store absolute URLs and request them directly. OkHttp's scheme error
+     * is the unambiguous sign of that second kind.
+     */
+    internal inline fun <T> withAbsoluteUrlFallback(block: (absolute: Boolean) -> T): T =
+        try {
+            block(false)
+        } catch (error: IllegalArgumentException) {
+            if (error.message?.startsWith(MISSING_SCHEME_MESSAGE) != true) throw error
+            block(true)
+        }
+
+    internal const val MISSING_SCHEME_MESSAGE = "Expected URL scheme"
+
+    internal fun inputAnimeUrl(
+        baseUrl: String,
+        url: String,
+        absolute: Boolean,
+    ): String = if (absolute) absoluteAnimeUrl(baseUrl, url) else normalizeAnimeUrl(baseUrl, url)
 
     internal fun normalizeAnimeUrl(
         baseUrl: String,
@@ -697,14 +739,29 @@ object MihonInvoker {
             } else {
                 url
             }
-        val hash = relative.indexOf('#')
-        if (hash < 0) return relative
-        val prefix = relative.substring(0, hash)
-        val parts = relative.substring(hash + 1).split('#')
+        return collapseRepeatedFragments(relative)
+    }
+
+    /** Resolves a stored path against [baseUrl]; absolute URLs are kept. */
+    internal fun absoluteAnimeUrl(
+        baseUrl: String,
+        url: String,
+    ): String {
+        if (url.toHttpUrlOrNull() != null || baseUrl.isBlank()) return collapseRepeatedFragments(url)
+        val path = if (url.startsWith('/')) url else "/$url"
+        return collapseRepeatedFragments(baseUrl.trimEnd('/') + path)
+    }
+
+    /** Turns `path#id#id#id`, left by repeated round trips, into `path#id`. */
+    internal fun collapseRepeatedFragments(url: String): String {
+        val hash = url.indexOf('#')
+        if (hash < 0) return url
+        val prefix = url.substring(0, hash)
+        val parts = url.substring(hash + 1).split('#')
         return if (parts.size > 1 && parts.all { it == parts.first() }) {
             "$prefix#${parts.first()}"
         } else {
-            relative
+            url
         }
     }
 

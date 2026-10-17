@@ -15,10 +15,12 @@ import mextensionserver.model.DataBody
 import mextensionserver.model.JFilterList
 import mextensionserver.model.JGroupFilter
 import mextensionserver.model.MangaResponse
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import java.net.URLClassLoader
 import kotlin.io.path.createTempFile
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 class MihonInvokerTest {
@@ -39,6 +41,39 @@ class MihonInvokerTest {
             "https://external.example/watch/1",
             MihonInvoker.normalizeAnimeUrl("https://anichi.to", "https://external.example/watch/1"),
         )
+    }
+
+    @Test
+    fun `retries with absolute URLs only for extensions that need them`() {
+        val base = "http://192.0.2.10:8096"
+        val stored = "$base/Users/user/Items/item#series"
+
+        // Jellyfin requests its stored absolute URL directly.
+        fun jellyfinRequest(url: String) =
+            MihonInvoker.withAbsoluteUrlFallback { absolute ->
+                MihonInvoker.inputAnimeUrl(base, url, absolute).toHttpUrl().toString()
+            }
+        assertEquals(stored, jellyfinRequest(stored))
+        // A path saved by an older server is resolved against the source.
+        assertEquals(stored, jellyfinRequest("/Users/user/Items/item#series"))
+
+        // Path-based extensions keep receiving the path.
+        assertEquals(
+            "/anime/one-piece-odmau#1642",
+            MihonInvoker.withAbsoluteUrlFallback { absolute ->
+                MihonInvoker.inputAnimeUrl("https://anichi.to", "https://anichi.to/anime/one-piece-odmau#1642#1642", absolute)
+            },
+        )
+
+        // Unrelated argument errors are not retried.
+        var attempts = 0
+        assertFailsWith<IllegalArgumentException> {
+            MihonInvoker.withAbsoluteUrlFallback<Unit> {
+                attempts++
+                throw IllegalArgumentException("unrelated")
+            }
+        }
+        assertEquals(1, attempts)
     }
 
     @Test
