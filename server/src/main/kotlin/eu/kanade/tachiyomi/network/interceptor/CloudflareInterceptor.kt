@@ -11,8 +11,10 @@ package eu.kanade.tachiyomi.network.interceptor
 import okhttp3.Interceptor
 import okhttp3.Response
 
+// Current extensions require this interceptor on the default client, but it
+// solves no challenges here. It must not lock: one instance serves every
+// extension's requests, so a lock would run them all one at a time.
 class CloudflareInterceptor : Interceptor {
-    @Synchronized
     override fun intercept(chain: Interceptor.Chain): Response {
         val originalRequest = chain.request()
         return chain.proceed(originalRequest)
