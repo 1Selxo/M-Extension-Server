@@ -10,6 +10,8 @@ import mextensionserver.impl.MihonInvoker
 import mextensionserver.model.DataBody
 import okhttp3.Cookie
 import okhttp3.HttpUrl
+import xyz.nulldev.androidcompat.ToastQueue
+import java.util.Base64
 
 class DalvikHandler {
     private val logger = KotlinLogging.logger {}
@@ -103,6 +105,18 @@ class DalvikHandler {
             errorResponse(e)
         } catch (e: Exception) {
             errorResponse(e)
+        }.withQueuedToasts()
+
+    /** Headers are ASCII, so the JSON list of toasts travels as base64. */
+    private fun NanoHTTPD.Response.withQueuedToasts(): NanoHTTPD.Response =
+        apply {
+            val toasts = ToastQueue.drain()
+            if (toasts.isEmpty()) return@apply
+            val json = objectMapper.writeValueAsString(toasts)
+            addHeader(
+                "X-Mangatan-Toasts",
+                Base64.getEncoder().encodeToString(json.toByteArray(Charsets.UTF_8)),
+            )
         }
 
     private fun errorResponse(error: Throwable): NanoHTTPD.Response {

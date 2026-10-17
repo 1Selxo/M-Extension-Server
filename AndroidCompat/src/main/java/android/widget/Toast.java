@@ -23,6 +23,7 @@ public class Toast {
 
     public void show() {
         System.out.printf("made a Toast: \"%s\"\n", text.toString());
+        xyz.nulldev.androidcompat.ToastQueue.INSTANCE.add(text.toString());
     }
 
     public void cancel() {
