@@ -66,17 +66,41 @@ object MExtensionServerLoader {
          * applied. Configurable factories such as Jellyfin decide how many
          * sources exist from SharedPreferences, so the list created while the
          * APK was first loaded can be stale after a sync or preference edit.
+         *
+         * A child whose id, name and address are unchanged keeps its existing
+         * instance, as it would on Android until the app restarts. Its state
+         * matters: Jellyfin cancels an earlier login when a later credential
+         * edit starts a new one, and a replaced instance cannot be cancelled.
+         * A child whose name or address changed is replaced, standing in for
+         * the restart those settings require.
          */
         @Synchronized
         fun refreshFactorySources(): List<Any> {
             val createSources = sourceFactory ?: return sources
-            val previous = sources
-            val refreshed = createSources()
-            previous
+            val previousByIdentity = sources.associateBy(::sourceIdentity)
+            val refreshed =
+                createSources().map { fresh ->
+                    previousByIdentity[sourceIdentity(fresh)] ?: fresh
+                }
+            sources
+                .filter { previous -> refreshed.none { it === previous } }
                 .filterIsInstance<eu.kanade.tachiyomi.source.Source>()
                 .forEach(MihonMetadataCache::remove)
             sources = refreshed
             return refreshed
+        }
+
+        private fun sourceIdentity(source: Any): Any {
+            val (id, name) =
+                when (source) {
+                    is eu.kanade.tachiyomi.source.Source -> source.id to source.name
+                    is eu.kanade.tachiyomi.animesource.AnimeSource -> source.id to source.name
+                    else -> return source
+                }
+            val baseUrl =
+                runCatching { source.javaClass.getMethod("getBaseUrl").invoke(source) }
+                    .getOrNull()
+            return Triple(id, name, baseUrl)
         }
 
         override fun close() {
