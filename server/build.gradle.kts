@@ -22,6 +22,7 @@ dependencies {
     implementation(libs.quickjs4j)
     implementation(libs.newpipe.extractor)
     implementation(libs.protobuf.javalite)
+    implementation(libs.appdirs)
     if (iosRuntime) {
         runtimeOnly(libs.slf4jsimple)
     }

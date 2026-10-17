@@ -66,8 +66,7 @@ internal fun initApplication(appDir: String?) {
 
         logger.info("Running MExtensionServer ${BuildConfig.VERSION} revision ${BuildConfig.REVISION}")
 
-        // Set custom app directory if provided
-        appDir?.let { System.setProperty("ts.server.rootDir", it) }
+        DataDirectory.configure(appDir)
         CookieHandler.setDefault(CookieManager())
 
         startMainLooper()
