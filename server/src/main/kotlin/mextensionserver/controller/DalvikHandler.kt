@@ -1,6 +1,5 @@
 package mextensionserver.controller
 
-import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.source.online.HttpSource
 import fi.iki.elonen.NanoHTTPD
@@ -14,8 +13,7 @@ import xyz.nulldev.androidcompat.ToastQueue
 import java.util.Base64
 
 class DalvikHandler {
-    private val logger = KotlinLogging.logger {}
-    private val objectMapper = jacksonObjectMapper()
+    private val objectMapper get() = JsonResponses.mapper
 
     fun serve(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response =
         try {
@@ -93,8 +91,8 @@ class DalvikHandler {
             // Serialize response
             val responseJson = objectMapper.writeValueAsString(invocation.result)
 
-            NanoHTTPD
-                .newFixedLengthResponse(
+            JsonResponses
+                .fixedLength(
                     NanoHTTPD.Response.Status.OK,
                     "application/json",
                     responseJson,
@@ -148,10 +146,15 @@ class DalvikHandler {
                     },
             )
         val errorJson = objectMapper.writeValueAsString(errorResponse)
-        return NanoHTTPD.newFixedLengthResponse(
+        return JsonResponses.fixedLength(
             status,
             "application/json",
             errorJson,
         )
+    }
+
+    private companion object {
+        // Created once: KotlinLogging derives the name from this lambda's class.
+        val logger = KotlinLogging.logger {}
     }
 }

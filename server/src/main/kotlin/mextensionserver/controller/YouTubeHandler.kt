@@ -1,6 +1,5 @@
 package mextensionserver.controller
 
-import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import fi.iki.elonen.NanoHTTPD
 import io.github.oshai.kotlinlogging.KotlinLogging
 import mextensionserver.impl.NewPipeYouTubeResolver
@@ -10,7 +9,7 @@ class YouTubeHandler(
     private val resolver: YouTubeVideoResolver = NewPipeYouTubeResolver,
 ) {
     private val logger = KotlinLogging.logger {}
-    private val objectMapper = jacksonObjectMapper()
+    private val objectMapper get() = JsonResponses.mapper
 
     fun serve(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response = serveUrl(session.parameters["url"]?.firstOrNull())
 
@@ -21,7 +20,7 @@ class YouTubeHandler(
         }
 
         return try {
-            NanoHTTPD.newFixedLengthResponse(
+            JsonResponses.fixedLength(
                 NanoHTTPD.Response.Status.OK,
                 "application/json",
                 objectMapper.writeValueAsString(resolver.resolve(url)),
@@ -39,7 +38,7 @@ class YouTubeHandler(
         status: NanoHTTPD.Response.Status,
         message: String,
     ): NanoHTTPD.Response =
-        NanoHTTPD.newFixedLengthResponse(
+        JsonResponses.fixedLength(
             status,
             "application/json",
             objectMapper.writeValueAsString(mapOf("error" to message)),
