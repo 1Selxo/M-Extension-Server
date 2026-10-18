@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Manifest of the local performance-harness fixture extension. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="eu.kanade.tachiyomi.extension.all.perffixture"
+    android:versionCode="1"
+    android:versionName="1.4.1">
+
+    <uses-feature android:name="tachiyomi.extension" />
+
+    <application android:label="@string/app_name">
+        <meta-data
+            android:name="tachiyomi.extension.class"
+            android:value=".PerfFixture" />
+        <meta-data
+            android:name="tachiyomi.extension.nsfw"
+            android:value="0" />
+    </application>
+</manifest>
