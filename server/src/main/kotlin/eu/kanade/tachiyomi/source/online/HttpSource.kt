@@ -11,14 +11,13 @@ import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.util.lang.awaitSingle
+import mextensionserver.util.urlWithoutDomain
 import okhttp3.Headers
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 import rx.Observable
 import uy.kohesive.injekt.injectLazy
-import java.net.URI
-import java.net.URISyntaxException
 import java.security.MessageDigest
 
 /**
@@ -355,20 +354,7 @@ abstract class HttpSource : CatalogueSource {
      *
      * @param orig the full url.
      */
-    private fun getUrlWithoutDomain(orig: String): String =
-        try {
-            val uri = URI(orig)
-            var out = uri.path
-            if (uri.query != null) {
-                out += "?" + uri.query
-            }
-            if (uri.fragment != null) {
-                out += "#" + uri.fragment
-            }
-            out
-        } catch (e: URISyntaxException) {
-            orig
-        }
+    private fun getUrlWithoutDomain(orig: String): String = urlWithoutDomain(orig)
 
     /**
      * Returns the url of the provided manga
