@@ -27,6 +27,8 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.util.ArrayDeque
+import java.util.Optional
+import java.util.concurrent.ConcurrentHashMap
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
@@ -410,7 +412,6 @@ object BytecodeEditor {
         private val constructorRedirects = mutableMapOf<String, MutableSet<String>>()
         private val superConstructorRedirects = mutableMapOf<String, MutableSet<String>>()
         private val claimedErasedCandidates = mutableSetOf<String>()
-        private val classLoader = BytecodeEditor::class.java.classLoader
 
         init {
             classBytes.forEach { bytes ->
@@ -503,10 +504,8 @@ object BytecodeEditor {
 
         private fun classInfo(name: String): ClassInfo? {
             if (classes.containsKey(name)) return classes[name]
-            val info =
-                classLoader
-                    .getResourceAsStream("$name.class")
-                    ?.use { ClassReader(it).toClassInfo() }
+            // Recorded here as before: candidate searches iterate [classes].
+            val info = hostClassInfo(name)
             classes[name] = info
             return info
         }
@@ -1161,34 +1160,55 @@ object BytecodeEditor {
             }
         }
 
-        private fun ClassReader.toClassInfo(): ClassInfo {
-            val constructors = mutableSetOf<String>()
-            accept(
-                object : ClassVisitor(Opcodes.ASM9) {
-                    override fun visitMethod(
-                        access: Int,
-                        name: String?,
-                        descriptor: String?,
-                        signature: String?,
-                        exceptions: Array<out String>?,
-                    ): MethodVisitor? {
-                        if (name == "<init>" && descriptor != null) constructors.add(descriptor)
-                        return null
-                    }
-                },
-                ClassReader.SKIP_CODE or ClassReader.SKIP_DEBUG or ClassReader.SKIP_FRAMES,
-            )
-            return ClassInfo(
-                superName = superName,
-                interfaces = interfaces.toList(),
-                isInterface = access and Opcodes.ACC_INTERFACE != 0,
-                isAbstract = access and Opcodes.ACC_ABSTRACT != 0,
-                constructors = constructors,
-            )
-        }
-
         private companion object {
             const val OBJECT = "java/lang/Object"
+
+            private val hostClassLoader = BytecodeEditor::class.java.classLoader
+
+            /**
+             * Hierarchy facts of classes on the server's own class path, which
+             * cannot change while the process runs. Each conversion used to
+             * look these up again; on the iOS interpreter the resource lookups
+             * were about a quarter of APK conversion time. Absent classes are
+             * cached too.
+             */
+            private val hostClassInfos = ConcurrentHashMap<String, Optional<ClassInfo>>()
+
+            fun hostClassInfo(name: String): ClassInfo? =
+                hostClassInfos
+                    .computeIfAbsent(name) { className ->
+                        Optional.ofNullable(
+                            hostClassLoader
+                                .getResourceAsStream("$className.class")
+                                ?.use { ClassReader(it).toClassInfo() },
+                        )
+                    }.orElse(null)
+
+            fun ClassReader.toClassInfo(): ClassInfo {
+                val constructors = mutableSetOf<String>()
+                accept(
+                    object : ClassVisitor(Opcodes.ASM9) {
+                        override fun visitMethod(
+                            access: Int,
+                            name: String?,
+                            descriptor: String?,
+                            signature: String?,
+                            exceptions: Array<out String>?,
+                        ): MethodVisitor? {
+                            if (name == "<init>" && descriptor != null) constructors.add(descriptor)
+                            return null
+                        }
+                    },
+                    ClassReader.SKIP_CODE or ClassReader.SKIP_DEBUG or ClassReader.SKIP_FRAMES,
+                )
+                return ClassInfo(
+                    superName = superName,
+                    interfaces = interfaces.toList(),
+                    isInterface = access and Opcodes.ACC_INTERFACE != 0,
+                    isAbstract = access and Opcodes.ACC_ABSTRACT != 0,
+                    constructors = constructors,
+                )
+            }
         }
     }
 }
