@@ -162,7 +162,7 @@ jobs:
             name: linux-x64
           - os: windows-latest
             name: windows-x64
-          - os: macos-14
+          - os: macos-15
             name: macOS-arm64
           - os: macos-15-intel
             name: macOS-x64
