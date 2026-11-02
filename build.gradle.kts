@@ -17,7 +17,9 @@ allprojects {
     repositories {
         mavenCentral()
         google()
-        maven("https://github.com/Suwayomi/Suwayomi-Server/raw/android-jar/")
+        // Suwayomi republishes android-jar 1.0.0 in place, dropping stubs its
+        // own AndroidCompat now implements. Pin the commit this fork builds with.
+        maven("https://github.com/Suwayomi/Suwayomi-Server/raw/3983289d9481a8ba99c0b16350b27f41364906a2/")
         maven("https://jogamp.org/deployment/maven")
         maven("https://maven.google.com/")
         maven("https://jitpack.io")
