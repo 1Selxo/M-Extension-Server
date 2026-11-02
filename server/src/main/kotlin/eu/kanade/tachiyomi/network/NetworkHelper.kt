@@ -13,9 +13,12 @@ import eu.kanade.tachiyomi.network.interceptor.CloudflareInterceptor
 import eu.kanade.tachiyomi.network.interceptor.MegaPlayCompatInterceptor
 import eu.kanade.tachiyomi.network.interceptor.UncaughtExceptionInterceptor
 import eu.kanade.tachiyomi.network.interceptor.UserAgentInterceptor
+import eu.kanade.tachiyomi.network.interceptor.WebViewCloudflareSolver
 import okhttp3.Cache
+import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
 import java.nio.file.Files
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 class NetworkHelper(
@@ -29,9 +32,15 @@ class NetworkHelper(
                 .Builder()
                 .cookieJar(cookieJar)
                 .addInterceptor(UncaughtExceptionInterceptor())
-                .addInterceptor(UserAgentInterceptor(::defaultUserAgentProvider))
-                .addInterceptor(CloudflareInterceptor())
-                .addInterceptor(MegaPlayCompatInterceptor())
+                .addInterceptor(UserAgentInterceptor(::userAgentFor))
+                .addInterceptor(
+                    CloudflareInterceptor(
+                        ::cloudflareProxyUrlProvider,
+                        ::setSolvedUA,
+                        cookieJar::addAll,
+                        WebViewCloudflareSolver(context, cookieJar),
+                    ),
+                ).addInterceptor(MegaPlayCompatInterceptor())
                 .connectTimeout(30, TimeUnit.SECONDS)
                 .readTimeout(30, TimeUnit.SECONDS)
                 .callTimeout(2, TimeUnit.MINUTES)
@@ -48,11 +57,46 @@ class NetworkHelper(
         client
     }
 
-    private var defaultUserAgent: String = System.getProperty("http.agent").orEmpty()
+    private var defaultUserAgent: String =
+        System.getProperty("http.agent").takeUnless { it.isNullOrBlank() }
+            ?: DEFAULT_USER_AGENT
 
     fun setUA(ua: String) {
-        defaultUserAgent = ua
+        val trimmed = ua.trim()
+        if (trimmed.isNotEmpty() && !trimmed.startsWith("Dart/", ignoreCase = true)) {
+            defaultUserAgent = trimmed
+        }
     }
 
     fun defaultUserAgentProvider() = defaultUserAgent
+
+    // A Cloudflare clearance cookie is only accepted with the user-agent that
+    // solved the challenge, while clients send their own with every call. A
+    // solved host keeps the solver's, or each request is challenged again.
+    private val solvedUserAgents = ConcurrentHashMap<String, String>()
+
+    fun setSolvedUA(
+        host: String,
+        ua: String,
+    ) {
+        solvedUserAgents[host] = ua
+    }
+
+    fun userAgentFor(url: HttpUrl) = solvedUserAgents[url.host] ?: defaultUserAgent
+
+    fun hasSolvedClearance(host: String): Boolean = solvedUserAgents.containsKey(host)
+
+    private var cloudflareProxyUrl: String = ""
+
+    /** URL of a FlareSolverr- / Byparr-compatible proxy, or "" to disable. */
+    fun setCloudflareProxyUrl(url: String) {
+        cloudflareProxyUrl = url
+    }
+
+    fun cloudflareProxyUrlProvider() = cloudflareProxyUrl
+
+    companion object {
+        const val DEFAULT_USER_AGENT =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) Gecko/20100101 Firefox/136.0"
+    }
 }

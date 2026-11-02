@@ -59,7 +59,7 @@ class MExtensionServerController(
                     newFixedLengthResponse(
                         Response.Status.OK,
                         "application/json",
-                        """{"mangatanMihonBridge":1,"animeSeasons":true,"animeHosters":true,"sourceFactory":true,"preferenceCallbacks":true,"imageProxy":true,"videoProxy":true,"youtubeResolver":true,"sourceUrls":true,"extensionHandles":true,"extensionInfo":true,"extensionToasts":true}""",
+                        """{"mangatanMihonBridge":1,"mangayomiMihonBridge":1,"animeSeasons":true,"animeHosters":true,"sourceFactory":true,"preferenceCallbacks":true,"imageProxy":true,"videoProxy":true,"youtubeResolver":true,"sourceUrls":true,"extensionHandles":true,"extensionInfo":true,"extensionToasts":true,"webviewBridge":true,"remoteWebView":1}""",
                     )
                 "/stop" -> {
                     newFixedLengthResponse("Server stopping").also {

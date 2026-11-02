@@ -68,5 +68,33 @@ class MExtensionServerLoaderTest {
     ) : eu.kanade.tachiyomi.animesource.AnimeSource {
         override val name = "Fake ($id)"
         override val lang = "all"
+        override val supportsLatest = false
+
+        override suspend fun getPopularAnime(page: Int) = throw UnsupportedOperationException()
+
+        override suspend fun getLatestUpdates(page: Int) = throw UnsupportedOperationException()
+
+        override suspend fun getSearchAnime(
+            page: Int,
+            query: String,
+            filters: eu.kanade.tachiyomi.animesource.model.AnimeFilterList,
+        ) = throw UnsupportedOperationException()
+
+        override suspend fun getAnimeEpisodeUpdate(
+            anime: eu.kanade.tachiyomi.animesource.model.SAnime,
+            episodes: List<eu.kanade.tachiyomi.animesource.model.SEpisode>,
+            fetchDetails: Boolean,
+            fetchEpisodes: Boolean,
+        ) = throw UnsupportedOperationException()
+
+        override suspend fun getAnimeSeasonUpdate(
+            anime: eu.kanade.tachiyomi.animesource.model.SAnime,
+            seasons: List<eu.kanade.tachiyomi.animesource.model.SAnime>,
+            fetchDetails: Boolean,
+            fetchSeasons: Boolean,
+        ) = throw UnsupportedOperationException()
+
+        override suspend fun getRelatedAnimeList(anime: eu.kanade.tachiyomi.animesource.model.SAnime) =
+            throw UnsupportedOperationException()
     }
 }

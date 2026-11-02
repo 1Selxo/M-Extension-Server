@@ -10,12 +10,19 @@ import eu.kanade.tachiyomi.source.CatalogueSource
 import eu.kanade.tachiyomi.source.Source
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
+import eu.kanade.tachiyomi.source.model.Page
+import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
+import eu.kanade.tachiyomi.source.online.HttpSource
+import mextensionserver.model.ChapterData
 import mextensionserver.model.DataBody
 import mextensionserver.model.JFilterList
 import mextensionserver.model.JGroupFilter
+import mextensionserver.model.JPage
 import mextensionserver.model.MangaResponse
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.Request
+import okhttp3.Response
 import java.net.URLClassLoader
 import kotlin.io.path.createTempFile
 import kotlin.test.Test
@@ -130,7 +137,7 @@ class MihonInvokerTest {
         val context =
             mutableListOf<Map<String, Any>>(
                 mapOf(
-                    "key" to "__mangatan_bridge_context__",
+                    "key" to "__mangayomi_bridge_context__",
                     "preferenceApplyMode" to "replace-present",
                 ),
             )
@@ -282,5 +289,121 @@ class MihonInvokerTest {
         }
 
         override fun getFilterList() = FilterList()
+    }
+
+    @Test
+    fun `returns direct imageUrl and headers for standard HttpSource`() {
+        val jar = createTempFile(prefix = "mextensionserver-test-", suffix = ".jar").toFile()
+        val packageInfo =
+            PackageInfo().apply {
+                packageName = "eu.kanade.tachiyomi.extension.en.directtest"
+                versionName = "1.0.0"
+                versionCode = 1
+                applicationInfo = ApplicationInfo()
+            }
+        val source = DirectHttpSource()
+        val extension =
+            MExtensionServerLoader.LoadedExtension(
+                initialSources = listOf(source),
+                packageInfo = packageInfo,
+                jarFile = jar,
+                classLoader = URLClassLoader(emptyArray()),
+            )
+
+        @Suppress("UNCHECKED_CAST")
+        val result =
+            MihonInvoker.invokeMethod(
+                extension,
+                DataBody(method = "getPageList", chapterData = ChapterData(url = "/ch1")),
+            ) as List<JPage>
+
+        assertEquals(1, result.size)
+        assertEquals("https://cdn.example.test/ch1/01.jpg", result[0].imageUrl)
+        assertEquals("https://example.test/", result[0].headers?.get("Referer"))
+        extension.close()
+    }
+
+    @Test
+    fun `serves HttpSource pages with custom client interceptors through the proxy`() {
+        MihonImageProxy.configure(39641)
+        val jar = createTempFile(prefix = "mextensionserver-test-", suffix = ".jar").toFile()
+        val packageInfo =
+            PackageInfo().apply {
+                packageName = "eu.kanade.tachiyomi.extension.en.interceptortest"
+                versionName = "1.0.0"
+                versionCode = 1
+                applicationInfo = ApplicationInfo()
+            }
+        val source = InterceptorHttpSource()
+        val extension =
+            MExtensionServerLoader.LoadedExtension(
+                initialSources = listOf(source),
+                packageInfo = packageInfo,
+                jarFile = jar,
+                classLoader = URLClassLoader(emptyArray()),
+            )
+
+        @Suppress("UNCHECKED_CAST")
+        val result =
+            MihonInvoker.invokeMethod(
+                extension,
+                DataBody(method = "getPageList", chapterData = ChapterData(url = "/ch1")),
+            ) as List<JPage>
+
+        assertEquals(1, result.size)
+        assertTrue(result[0].imageUrl?.startsWith("http://127.0.0.1:39641/image/") == true)
+        extension.close()
+        MihonImageProxy.clear()
+    }
+
+    private open class DirectHttpSource : HttpSource() {
+        override val id = 100L
+        override val name = "Direct source"
+        override val lang = "en"
+        override val baseUrl = "https://example.test"
+        override val supportsLatest = false
+
+        override fun headersBuilder() = okhttp3.Headers.Builder().add("Referer", "https://example.test/")
+
+        override suspend fun getPageList(chapter: SChapter): List<Page> = listOf(Page(0, "/ch1/p1", "https://cdn.example.test/ch1/01.jpg"))
+
+        override fun popularMangaRequest(page: Int): Request = error("unused")
+
+        override fun popularMangaParse(response: Response): MangasPage = error("unused")
+
+        override fun searchMangaRequest(
+            page: Int,
+            query: String,
+            filters: FilterList,
+        ): Request = error("unused")
+
+        override fun searchMangaParse(response: Response): MangasPage = error("unused")
+
+        override fun latestUpdatesRequest(page: Int): Request = error("unused")
+
+        override fun latestUpdatesParse(response: Response): MangasPage = error("unused")
+
+        override fun mangaDetailsParse(response: Response): SManga = error("unused")
+
+        override fun chapterListParse(response: Response): List<SChapter> = error("unused")
+
+        override fun pageListParse(response: Response): List<Page> = error("unused")
+
+        override fun imageUrlParse(response: Response): String = error("unused")
+    }
+
+    private class InterceptorHttpSource : DirectHttpSource() {
+        override val client: okhttp3.OkHttpClient =
+            okhttp3.OkHttpClient
+                .Builder()
+                .addInterceptor { chain ->
+                    chain.proceed(
+                        chain
+                            .request()
+                            .newBuilder()
+                            .removeHeader("Referer")
+                            .build(),
+                    )
+                }.build()
     }
 }

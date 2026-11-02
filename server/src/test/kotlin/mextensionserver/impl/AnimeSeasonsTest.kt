@@ -8,7 +8,6 @@ import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
-import kotlinx.coroutines.runBlocking
 import mextensionserver.model.toJAnime
 import okhttp3.Headers
 import okhttp3.OkHttpClient
@@ -47,6 +46,7 @@ class AnimeSeasonsTest {
     fun `lib16 video constructor and copy retain extension resolution data`() {
         val video =
             Video(
+                videoUrl = "",
                 videoTitle = "720p",
                 internalData = "session",
                 preferred = true,
@@ -61,35 +61,33 @@ class AnimeSeasonsTest {
         assertEquals(720, resolved.resolution)
         val legacy = Video("page", "legacy", "stream")
         assertEquals("legacy", legacy.quality)
-        assertEquals("page", legacy.videoPageUrl)
-        val copyDefault =
-            Video::class.java.declaredMethods.single {
-                it.name == "copy\$default"
-            }
-        assertEquals(17, copyDefault.parameterCount)
+        assertEquals("page", legacy.url)
+        // Extension-lib 16 calls copy without memo, lib 17 with it.
+        val copyDefaults =
+            Video::class.java.declaredMethods
+                .filter { it.name == "copy\$default" }
+                .map { it.parameterCount }
+                .sorted()
+        assertEquals(listOf(17, 18), copyDefaults)
     }
 
     @Test
-    fun `hoster detection leaves old sources on the episode API`() =
-        runBlocking {
-            val legacy = TestSource()
-            assertFalse(AnimeVideoResolver.hasHosters(legacy))
-            assertEquals("legacy", AnimeVideoResolver.resolve(legacy, SEpisode.create()).single().quality)
-            val modern =
-                object : TestSource() {
-                    override suspend fun getHosterList(episode: SEpisode) =
-                        listOf(
-                            Hoster(
-                                videoList =
-                                    listOf(
-                                        Video(videoTitle = "modern", initialized = true),
-                                    ),
-                            ),
-                        )
-                }
-            assertTrue(AnimeVideoResolver.hasHosters(modern))
-            assertEquals("modern", AnimeVideoResolver.resolve(modern, SEpisode.create()).single().quality)
-        }
+    fun `hoster detection leaves old sources on the episode API`() {
+        assertFalse(MihonInvoker.checkHasHosters(TestSource()))
+        val modern =
+            object : TestSource() {
+                override suspend fun getHosterList(episode: SEpisode) =
+                    listOf(
+                        Hoster(
+                            videoList =
+                                listOf(
+                                    Video(videoUrl = "", videoTitle = "modern", initialized = true),
+                                ),
+                        ),
+                    )
+            }
+        assertTrue(MihonInvoker.checkHasHosters(modern))
+    }
 
     @Test
     fun `opening one deferred quality resolves once and keeps headers and ranges`() {
@@ -122,8 +120,8 @@ class AnimeSeasonsTest {
                 }
             }
         MihonVideoProxy.configure(45678)
-        val first = MihonVideoProxy.proxy(source, Video(videoTitle = "720p"), deferResolution = true)
-        MihonVideoProxy.proxy(source, Video(videoTitle = "1080p"), deferResolution = true)
+        val first = MihonVideoProxy.proxy(source, Video(videoUrl = "", videoTitle = "720p"), deferResolution = true)
+        MihonVideoProxy.proxy(source, Video(videoUrl = "", videoTitle = "1080p"), deferResolution = true)
         assertEquals(0, resolutions)
         val token = first.videoUrl!!.substringAfter("/video/")
         repeat(2) { MihonVideoProxy.fetch(token, "bytes=0-4")!!.stream.close() }

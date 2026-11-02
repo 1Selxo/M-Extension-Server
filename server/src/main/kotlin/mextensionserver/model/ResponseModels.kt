@@ -81,6 +81,7 @@ data class JPage(
     val index: Int,
     val url: String,
     val imageUrl: String?,
+    val headers: Map<String, String>? = null,
 )
 
 data class JPreference(
@@ -120,7 +121,11 @@ fun SChapter.toJChapter(): JChapter =
 
 fun SAnime.toJAnime(): JAnime =
     JAnime(
-        url = runCatching { this.url }.getOrDefault(""),
+        url =
+            BridgeMemo.encode(
+                runCatching { this.url }.getOrDefault(""),
+                runCatching { this.memo }.getOrDefault(kotlinx.serialization.json.JsonObject(emptyMap())),
+            ),
         title = runCatching { this.title }.getOrDefault(""),
         artist = runCatching { this.artist }.getOrNull(),
         author = runCatching { this.author }.getOrNull(),
@@ -136,7 +141,11 @@ fun SAnime.toJAnime(): JAnime =
 
 fun SEpisode.toJEpisode(): JEpisode =
     JEpisode(
-        url = runCatching { this.url }.getOrDefault(""),
+        url =
+            BridgeMemo.encode(
+                runCatching { this.url }.getOrDefault(""),
+                runCatching { this.memo }.getOrDefault(kotlinx.serialization.json.JsonObject(emptyMap())),
+            ),
         name = runCatching { this.name }.getOrDefault(""),
         date_upload = runCatching { this.date_upload }.getOrDefault(0L),
         episode_number = runCatching { this.episode_number }.getOrDefault(0f),

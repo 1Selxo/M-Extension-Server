@@ -9,13 +9,19 @@ import androidx.preference.Preference
 import androidx.preference.PreferenceScreen
 import androidx.preference.SwitchPreferenceCompat
 import eu.kanade.tachiyomi.animesource.AnimeCatalogueSource
+import eu.kanade.tachiyomi.animesource.AnimeSource
 import eu.kanade.tachiyomi.animesource.ConfigurableAnimeSource
 import eu.kanade.tachiyomi.animesource.model.AnimeFilter
 import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
+import eu.kanade.tachiyomi.animesource.model.FetchType
+import eu.kanade.tachiyomi.animesource.model.Hoster
+import eu.kanade.tachiyomi.animesource.model.Hoster.Companion.toHosterList
+import eu.kanade.tachiyomi.animesource.model.HttpServer
 import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
+import eu.kanade.tachiyomi.animesource.online.ParsedAnimeHttpSource
 import eu.kanade.tachiyomi.source.Source
 import eu.kanade.tachiyomi.source.model.Filter
 import eu.kanade.tachiyomi.source.model.FilterList
@@ -23,7 +29,13 @@ import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.HttpSource
 import io.github.oshai.kotlinlogging.KotlinLogging
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import mextensionserver.model.AnimeData
 import mextensionserver.model.AnimeResponse
 import mextensionserver.model.BridgeMemo
@@ -32,6 +44,7 @@ import mextensionserver.model.DataBody
 import mextensionserver.model.EpisodeData
 import mextensionserver.model.JAnime
 import mextensionserver.model.JChapter
+import mextensionserver.model.JEpisode
 import mextensionserver.model.JFilterList
 import mextensionserver.model.JManga
 import mextensionserver.model.JPage
@@ -39,16 +52,25 @@ import mextensionserver.model.MangaData
 import mextensionserver.model.MangaResponse
 import mextensionserver.model.toJAnime
 import mextensionserver.model.toJChapter
+import mextensionserver.model.toJEpisode
 import mextensionserver.model.toJManga
+import okhttp3.Headers
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeoutException
 
 object MihonInvoker {
     private val logger = KotlinLogging.logger {}
-    private const val BRIDGE_CONTEXT_KEY = "__mangatan_bridge_context__"
+    private const val BRIDGE_CONTEXT_KEY = "__mangayomi_bridge_context__"
     private const val REPLACE_PRESENT_PREFERENCES = "replace-present"
     private const val KL_RAW_SOURCE_ID = "7433897302034602657"
+    private val sourceHttpServers = ConcurrentHashMap<Long, HttpServer>()
+
+    // ponytail: one fixed budget for every hoster; make it a setting if a slow but
+    // working hoster (a FlareSolverr solve can take ~20 s) keeps getting cut off.
+    private const val HOSTER_TIMEOUT_MS = 30_000L
     private val context: Application
         get() = Injekt.get()
 
@@ -127,11 +149,56 @@ object MihonInvoker {
         if (loadedSources.isEmpty()) {
             throw IllegalArgumentException("No sources found in extension")
         }
+        if (loadedSources.size == 1) {
+            return loadedSources.first()
+        }
+
+        // 1. Try matching by requested sourceId if provided
         val requestedSourceId =
-            bridgeContext(data)["sourceId"]?.toString()
-                ?: return loadedSources.first()
-        return loadedSources.firstOrNull { sourceId(it) == requestedSourceId }
-            ?: throw IllegalArgumentException("Source $requestedSourceId was not found in extension")
+            data.sourceId
+                ?: bridgeContext(data)["sourceId"]?.toString()
+
+        if (!requestedSourceId.isNullOrBlank()) {
+            val match =
+                loadedSources.firstOrNull {
+                    val sId = sourceId(it)
+                    sId == requestedSourceId ||
+                        "mihon-$sId".hashCode().toString() == requestedSourceId ||
+                        sId.hashCode().toString() == requestedSourceId
+                }
+            if (match != null) return match
+        }
+
+        // 2. Try matching by base URL. Clients that rewrite the source id —
+        // Mangayomi hashes it, and a Dart hash never equals a JVM one — cannot
+        // be matched above, and an extension whose sources share a language
+        // would otherwise always resolve to the same one.
+        val requestedBaseUrl =
+            data.sourceBaseUrl
+                ?: bridgeContext(data)["sourceBaseUrl"]?.toString()
+
+        if (!requestedBaseUrl.isNullOrBlank()) {
+            val urlMatch =
+                loadedSources.firstOrNull {
+                    sourceBaseUrl(it)?.trimEnd('/').equals(requestedBaseUrl.trimEnd('/'), ignoreCase = true)
+                }
+            if (urlMatch != null) return urlMatch
+        }
+
+        // 3. Try matching by language if provided (e.g. "fr", "en", "es", "all")
+        val requestedLang =
+            data.lang
+                ?: bridgeContext(data)["lang"]?.toString()
+
+        if (!requestedLang.isNullOrBlank()) {
+            val langMatch =
+                loadedSources.firstOrNull {
+                    sourceLanguage(it)?.equals(requestedLang, ignoreCase = true) == true
+                }
+            if (langMatch != null) return langMatch
+        }
+
+        return loadedSources.first()
     }
 
     private fun sourceId(source: Any): String =
@@ -234,6 +301,13 @@ object MihonInvoker {
         when (source) {
             is Source -> source.name
             is eu.kanade.tachiyomi.animesource.AnimeSource -> source.name
+            else -> null
+        }
+
+    private fun sourceBaseUrl(source: Any): String? =
+        when (source) {
+            is HttpSource -> source.baseUrl
+            is AnimeHttpSource -> source.baseUrl
             else -> null
         }
 
@@ -455,25 +529,166 @@ object MihonInvoker {
 
         return runBlocking {
             val pages = source.getPageList(chapterData.toSChapter(source))
+            val httpSource = source as? HttpSource
+
+            val overridesFetchImage =
+                if (httpSource != null) {
+                    try {
+                        val method =
+                            httpSource.javaClass.getMethod(
+                                "fetchImage",
+                                eu.kanade.tachiyomi.source.model.Page::class.java,
+                            )
+                        method.declaringClass != HttpSource::class.java
+                    } catch (_: Exception) {
+                        false
+                    }
+                } else {
+                    false
+                }
+            val isSpecialSource = httpSource != null && httpSource.id.toString() == KL_RAW_SOURCE_ID
+            val hasCustomInterceptors =
+                if (httpSource != null) {
+                    hasCustomClientInterceptors(httpSource)
+                } else {
+                    false
+                }
+
             pages.map { page ->
-                JPage(
-                    index = page.index,
-                    url = page.url,
-                    imageUrl =
-                        if (source is HttpSource) {
-                            MihonImageProxy.register(source, page)
-                                ?: run {
-                                    if (page.imageUrl == null) {
-                                        page.imageUrl = source.getImageUrl(page)
-                                    }
-                                    source.imageRequest(page).url.toString()
-                                }
-                        } else {
-                            page.imageUrl ?: page.url
-                        },
-                )
+                if (httpSource != null) {
+                    val rawImageUrl = page.imageUrl
+                    val isStandardHttpUrl =
+                        rawImageUrl != null &&
+                            (
+                                rawImageUrl.startsWith("http://", ignoreCase = true) ||
+                                    rawImageUrl.startsWith("https://", ignoreCase = true)
+                            ) &&
+                            !rawImageUrl.contains("#")
+
+                    val useProxy =
+                        overridesFetchImage ||
+                            isSpecialSource ||
+                            hasCustomInterceptors ||
+                            !isStandardHttpUrl ||
+                            hasSolvedClearanceForImage(httpSource, rawImageUrl)
+
+                    if (useProxy) {
+                        JPage(
+                            index = page.index,
+                            url = page.url,
+                            imageUrl =
+                                MihonImageProxy.register(source, page)
+                                    ?: run {
+                                        if (page.imageUrl == null) {
+                                            page.imageUrl = source.getImageUrl(page)
+                                        }
+                                        source.imageRequest(page).url.toString()
+                                    },
+                        )
+                    } else {
+                        val request = httpSource.imageRequest(page)
+                        val directUrl = request.url.toString()
+                        val reqHeaders = request.headers
+                        val headersMap =
+                            (0 until reqHeaders.size).associate {
+                                reqHeaders.name(it) to reqHeaders.value(it)
+                            }
+                        JPage(
+                            index = page.index,
+                            url = page.url,
+                            imageUrl = directUrl,
+                            headers = if (headersMap.isNotEmpty()) headersMap else null,
+                        )
+                    }
+                } else {
+                    JPage(
+                        index = page.index,
+                        url = page.url,
+                        imageUrl = page.imageUrl ?: page.url,
+                    )
+                }
             }
         }
+    }
+
+    private fun hasCustomClientInterceptors(httpSource: HttpSource): Boolean {
+        val overridesClient =
+            try {
+                httpSource.javaClass.getMethod("getClient").declaringClass != HttpSource::class.java
+            } catch (_: Exception) {
+                false
+            }
+        if (!overridesClient) return false
+
+        return runCatching {
+            val defaultClient = runCatching { httpSource.network.client }.getOrNull()
+            val sourceClient = httpSource.client
+            if (defaultClient != null) {
+                sourceClient.interceptors != defaultClient.interceptors ||
+                    sourceClient.networkInterceptors != defaultClient.networkInterceptors
+            } else {
+                sourceClient.interceptors.isNotEmpty() ||
+                    sourceClient.networkInterceptors.isNotEmpty()
+            }
+        }.getOrDefault(true)
+    }
+
+    private fun hasSolvedClearanceForImage(
+        httpSource: HttpSource,
+        rawImageUrl: String?,
+    ): Boolean =
+        runCatching {
+            val net = httpSource.network
+            val baseHost =
+                runCatching {
+                    okhttp3.HttpUrl.Companion.run { httpSource.baseUrl.toHttpUrl().host }
+                }.getOrNull()
+            val imageHost =
+                rawImageUrl?.let {
+                    runCatching {
+                        okhttp3.HttpUrl.Companion.run { it.toHttpUrl().host }
+                    }.getOrNull()
+                }
+            (baseHost != null && net.hasSolvedClearance(baseHost)) ||
+                (imageHost != null && net.hasSolvedClearance(imageHost))
+        }.getOrDefault(false)
+
+    private fun isLoopback(url: String?): Boolean {
+        if (url.isNullOrBlank()) return false
+        val httpUrl = url.toHttpUrlOrNull() ?: return false
+        val host = httpUrl.host
+        return host == "localhost" || host == "127.0.0.1" || host == "::1"
+    }
+
+    private fun hasSolvedClearanceForVideo(
+        source: AnimeHttpSource,
+        videoUrl: String?,
+    ): Boolean =
+        runCatching {
+            val net = source.network
+            val baseHost =
+                runCatching {
+                    okhttp3.HttpUrl.Companion.run { source.baseUrl.toHttpUrl().host }
+                }.getOrNull()
+            val videoHost =
+                videoUrl?.let {
+                    runCatching {
+                        okhttp3.HttpUrl.Companion.run { it.toHttpUrl().host }
+                    }.getOrNull()
+                }
+            (baseHost != null && net.hasSolvedClearance(baseHost)) ||
+                (videoHost != null && net.hasSolvedClearance(videoHost))
+        }.getOrDefault(false)
+
+    private fun shouldProxyVideo(
+        source: AnimeHttpSource,
+        video: Video,
+    ): Boolean {
+        if (video.usesHttpServer()) return true
+        val targetUrl = video.videoUrl ?: video.url
+        if (isLoopback(targetUrl)) return true
+        if (hasSolvedClearanceForVideo(source, targetUrl)) return true
+        return false
     }
 
     private fun invokeHeadersAnime(source: AnimeCatalogueSource): List<String> =
@@ -559,7 +774,14 @@ object MihonInvoker {
         return runBlocking {
             val detailedAnime =
                 withAbsoluteUrlFallback { absolute ->
-                    source.getAnimeDetails(animeData.toSAnime(source, absolute))
+                    val sAnime = animeData.toSAnime(source, absolute)
+                    try {
+                        source.getAnimeDetails(sAnime)
+                    } catch (_: UnsupportedOperationException) {
+                        source.getAnimeEpisodeUpdate(sAnime, emptyList(), fetchDetails = true, fetchEpisodes = false).anime
+                    } catch (_: NotImplementedError) {
+                        source.getAnimeEpisodeUpdate(sAnime, emptyList(), fetchDetails = true, fetchEpisodes = false).anime
+                    }
                 }
             // Return the extension's own URL, as Mihon stores it. Jellyfin, for
             // example, needs its absolute URLs back on later calls.
@@ -584,7 +806,7 @@ object MihonInvoker {
     private fun invokeGetEpisodeList(
         source: AnimeCatalogueSource,
         animeData: AnimeData?,
-    ): List<SEpisode> {
+    ): List<JEpisode> {
         if (animeData == null) {
             throw IllegalArgumentException("animeData is required for getEpisodeList")
         }
@@ -594,11 +816,65 @@ object MihonInvoker {
         }
 
         return runBlocking {
-            withAbsoluteUrlFallback { absolute ->
-                source.getEpisodeList(animeData.toSAnime(source, absolute))
+            val episodes =
+                withAbsoluteUrlFallback { absolute ->
+                    fetchEpisodesWithSeasons(source, animeData.toSAnime(source, absolute))
+                }
+            episodes.map { it.toJEpisode() }
+        }
+    }
+
+    private suspend fun fetchEpisodesWithSeasons(
+        source: AnimeHttpSource,
+        sAnime: SAnime,
+        depth: Int = 0,
+    ): List<SEpisode> {
+        if (depth < 2 && sAnime.fetch_type == FetchType.Seasons && checkHasSeasons(source)) {
+            val seasons =
+                runCatching { source.getSeasonList(sAnime) }
+                    .getOrDefault(emptyList())
+            if (seasons.isNotEmpty()) {
+                return flattenSeasonEpisodes(source, seasons, depth)
+            }
+        }
+
+        return try {
+            source.getEpisodeList(sAnime)
+        } catch (e: UnsupportedOperationException) {
+            if (depth < 2 && checkHasSeasons(source)) {
+                val seasons = source.getSeasonList(sAnime)
+                flattenSeasonEpisodes(source, seasons, depth)
+            } else {
+                source.getAnimeEpisodeUpdate(sAnime, emptyList(), fetchDetails = false, fetchEpisodes = true).episodes
+            }
+        } catch (e: NotImplementedError) {
+            if (depth < 2 && checkHasSeasons(source)) {
+                val seasons = source.getSeasonList(sAnime)
+                flattenSeasonEpisodes(source, seasons, depth)
+            } else {
+                source.getAnimeEpisodeUpdate(sAnime, emptyList(), fetchDetails = false, fetchEpisodes = true).episodes
             }
         }
     }
+
+    private suspend fun flattenSeasonEpisodes(
+        source: AnimeHttpSource,
+        seasons: List<SAnime>,
+        depth: Int,
+    ): List<SEpisode> =
+        seasons.flatMap { season ->
+            val seasonTitle = runCatching { season.title.trim() }.getOrDefault("")
+            val seasonEpisodes =
+                runCatching { fetchEpisodesWithSeasons(source, season, depth + 1) }
+                    .getOrDefault(emptyList())
+            seasonEpisodes.map { episode ->
+                if (seasonTitle.isNotEmpty() && !episode.name.contains(seasonTitle, ignoreCase = true)) {
+                    episode.apply { name = "$seasonTitle - $name" }
+                } else {
+                    episode
+                }
+            }
+        }
 
     private fun invokeGetEpisodeUrl(
         source: AnimeCatalogueSource,
@@ -611,6 +887,58 @@ object MihonInvoker {
             throw IllegalArgumentException("Source must be AnimeHttpSource for getEpisodeUrl")
         }
         return withAbsoluteUrlFallback { absolute -> source.getEpisodeUrl(episodeData.toSEpisode(source, absolute)) }
+    }
+
+    internal fun checkHasHosters(source: AnimeHttpSource): Boolean {
+        var current: Class<in AnimeHttpSource> = source.javaClass
+        while (true) {
+            if (current == ParsedAnimeHttpSource::class.java ||
+                current == AnimeHttpSource::class.java ||
+                current == AnimeSource::class.java
+            ) {
+                return false
+            }
+            if (current.declaredMethods.any {
+                    it.name in
+                        listOf(
+                            "getHosterList",
+                            "hosterListRequest",
+                            "hosterListParse",
+                            "hosterListSelector",
+                            "hosterFromElement",
+                        )
+                }
+            ) {
+                return true
+            }
+            current = current.superclass ?: return false
+        }
+    }
+
+    private fun checkHasSeasons(source: AnimeHttpSource): Boolean {
+        var current: Class<in AnimeHttpSource> = source.javaClass
+        while (true) {
+            if (current == ParsedAnimeHttpSource::class.java ||
+                current == AnimeHttpSource::class.java ||
+                current == AnimeSource::class.java
+            ) {
+                return false
+            }
+            if (current.declaredMethods.any {
+                    it.name in
+                        listOf(
+                            "getSeasonList",
+                            "seasonListRequest",
+                            "seasonListParse",
+                            "seasonListSelector",
+                            "seasonFromElement",
+                        )
+                }
+            ) {
+                return true
+            }
+            current = current.superclass ?: return false
+        }
     }
 
     private fun invokeGetVideoList(
@@ -626,13 +954,212 @@ object MihonInvoker {
         }
 
         return runBlocking {
-            val videos =
+            // Mirror Aniyomi's EpisodeLoader.getHostersOnHttp: inspect the runtime class
+            // hierarchy before calling getHosterList so legacy extensions (lib 14/15) go
+            // straight to getVideoList(episode) without making a wasted HTTP call or
+            // crashing with UnsupportedOperationException.
+            val hasHosters = checkHasHosters(source)
+            // Lazy videos wait until the player opens one, as in Aniyomi: Jellyfin,
+            // for example, starts a transcode for each video it resolves.
+            val deferResolution = hasHosters && MihonVideoProxy.isRunning
+            val hosters: List<Hoster> =
                 withAbsoluteUrlFallback { absolute ->
-                    AnimeVideoResolver.resolve(source, episodeData.toSEpisode(source, absolute))
+                    val sEpisode = episodeData.toSEpisode(source, absolute)
+                    if (hasHosters) {
+                        try {
+                            with(source) { source.getHosterList(sEpisode).sortHosters() }
+                        } catch (_: UnsupportedOperationException) {
+                            with(source) { source.getVideoList(sEpisode).sortVideos().toHosterList() }
+                        } catch (_: NotImplementedError) {
+                            with(source) { source.getVideoList(sEpisode).sortVideos().toHosterList() }
+                        }
+                    } else {
+                        try {
+                            with(source) { source.getVideoList(sEpisode).sortVideos().toHosterList() }
+                        } catch (_: UnsupportedOperationException) {
+                            with(source) { source.getHosterList(sEpisode).sortHosters() }
+                        } catch (_: NotImplementedError) {
+                            with(source) { source.getHosterList(sEpisode).sortHosters() }
+                        }
+                    }
                 }
-            videos.map { MihonVideoProxy.proxy(source, it, deferResolution = AnimeVideoResolver.hasHosters(source)) }
+
+            // Resolve hosters in parallel and stop waiting after HOSTER_TIMEOUT_MS: one
+            // hoster stuck behind Cloudflare must not hold back the ones that work.
+            val hosterScope = CoroutineScope(Dispatchers.IO)
+            val results =
+                hosters
+                    .map { hoster ->
+                        hosterScope.async {
+                            runCatching {
+                                val rawVideos =
+                                    hoster.videoList
+                                        ?: source.getVideoList(hoster)
+                                val sortedVideos = with(source) { rawVideos.sortVideos() }
+                                sortedVideos.mapNotNull { video ->
+                                    if (deferResolution && !video.initialized) {
+                                        video.copy(videoTitle = formatVideoQuality(hoster.hosterName, video.quality))
+                                    } else {
+                                        resolveSingleVideo(source, hoster.hosterName, video)
+                                    }
+                                }
+                            }
+                        }
+                    }.map { deferred ->
+                        withTimeoutOrNull(HOSTER_TIMEOUT_MS) { deferred.await() }
+                            ?: Result.failure(TimeoutException("Hoster timed out after ${HOSTER_TIMEOUT_MS}ms"))
+                    }
+            hosterScope.cancel()
+            results.forEachIndexed { i, result ->
+                result.exceptionOrNull()?.let { logger.warn(it) { "Hoster ${hosters[i].hosterName} failed" } }
+            }
+            val videos =
+                results
+                    .flatMap { it.getOrDefault(emptyList()) }
+                    .sortedByDescending { it.preferred }
+            // An empty list makes the client wait for videos that never come, so
+            // report why when every hoster failed.
+            if (videos.isEmpty()) {
+                results.firstNotNullOfOrNull { it.exceptionOrNull() }?.let { throw it }
+            }
+            videos.map { video ->
+                val fallbackHeaders =
+                    runCatching {
+                        val defaultHeaders = source.headers
+                        val builder = defaultHeaders.newBuilder()
+                        video.headers?.forEach { (name, value) ->
+                            builder.set(name, value)
+                        }
+                        builder.build()
+                    }.getOrDefault(video.headers ?: Headers.Builder().build())
+
+                if (deferResolution && !video.initialized) {
+                    MihonVideoProxy.proxy(source, video, deferResolution = true) {
+                        resolveSingleVideo(source, "", it)
+                    }
+                } else if (shouldProxyVideo(source, video)) {
+                    MihonVideoProxy.proxy(source, video)
+                } else {
+                    Video(
+                        url = video.url.ifEmpty { video.videoUrl.orEmpty() },
+                        quality = video.quality,
+                        videoUrl = video.videoUrl,
+                        headers = fallbackHeaders,
+                        subtitleTracks = video.subtitleTracks.map { MihonVideoProxy.proxyTrack(source.client, fallbackHeaders, it) },
+                        audioTracks = video.audioTracks.map { MihonVideoProxy.proxyTrack(source.client, fallbackHeaders, it) },
+                        timestamps = video.timestamps,
+                    ).also {
+                        it.resolution = video.resolution
+                        it.bitrate = video.bitrate
+                        it.preferred = video.preferred
+                        it.mpvArgs = video.mpvArgs
+                        it.ffmpegStreamArgs = video.ffmpegStreamArgs
+                        it.ffmpegVideoArgs = video.ffmpegVideoArgs
+                    }
+                }
+            }
         }
     }
+
+    private suspend fun resolveSingleVideo(
+        source: AnimeHttpSource,
+        hosterName: String,
+        video: Video,
+    ): Video? {
+        val resolved =
+            if (!video.initialized) {
+                try {
+                    source.resolveVideo(video) ?: return null
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    video
+                }
+            } else {
+                video
+            }
+
+        val currentVideoUrl = resolved.videoUrl
+        val withUrl =
+            if (currentVideoUrl.isNullOrEmpty() || currentVideoUrl == "null" || resolved.status == Video.LOAD_VIDEO) {
+                if (resolved.url.isNotEmpty() && resolved.url != "null") {
+                    runCatching {
+                        val fetchedUrl = source.getVideoUrl(resolved)
+                        resolved.copy(videoUrl = fetchedUrl, initialized = true).also {
+                            it.status = Video.READY
+                        }
+                    }.getOrDefault(resolved)
+                } else {
+                    resolved
+                }
+            } else {
+                resolved
+            }
+
+        val finalUrl = withUrl.videoUrl?.takeIf { it.isNotBlank() && it != "null" } ?: return null
+        val withServerPort =
+            if (withUrl.usesHttpServer()) {
+                val port = ensureHttpServerPort(source)
+                if (port > 0) withUrl.copyHttpServer(port) else withUrl
+            } else {
+                withUrl
+            }
+
+        val formattedQuality = formatVideoQuality(hosterName, withServerPort.quality)
+        val effectiveVideoUrl = withServerPort.videoUrl ?: finalUrl
+        val originalUrl = withServerPort.url.takeIf { it.isNotBlank() && it != "null" } ?: effectiveVideoUrl
+        return Video(
+            url = originalUrl,
+            quality = formattedQuality,
+            videoUrl = effectiveVideoUrl,
+            headers = withServerPort.headers,
+            subtitleTracks = withServerPort.subtitleTracks,
+            audioTracks = withServerPort.audioTracks,
+            timestamps = withServerPort.timestamps,
+        ).also {
+            it.resolution = withServerPort.resolution
+            it.bitrate = withServerPort.bitrate
+            it.preferred = withServerPort.preferred
+            it.mpvArgs = withServerPort.mpvArgs
+            it.ffmpegStreamArgs = withServerPort.ffmpegStreamArgs
+            it.ffmpegVideoArgs = withServerPort.ffmpegVideoArgs
+            it.internalData = withServerPort.internalData
+            it.initialized = true
+            it.memo = withServerPort.memo
+            it.status = Video.READY
+        }
+    }
+
+    private fun formatVideoQuality(
+        hosterName: String,
+        quality: String,
+    ): String {
+        val cleanHoster = hosterName.trim()
+        val cleanQuality = quality.trim()
+        if (cleanHoster.isEmpty() || cleanHoster == Hoster.NO_HOSTER_LIST) {
+            return cleanQuality.ifEmpty { "Default" }
+        }
+        if (cleanQuality.isEmpty()) {
+            return cleanHoster
+        }
+        if (cleanQuality.contains(cleanHoster, ignoreCase = true)) {
+            return cleanQuality
+        }
+        return "$cleanHoster - $cleanQuality"
+    }
+
+    private fun ensureHttpServerPort(source: AnimeHttpSource): Int =
+        runCatching {
+            val server =
+                sourceHttpServers.compute(source.id) { _, existing ->
+                    if (existing != null && existing.isRunning()) {
+                        existing
+                    } else {
+                        existing?.runCatching { stop() }
+                        source.createHttpServer()?.also { it.start() }
+                    }
+                }
+            server?.listeningPort ?: 0
+        }.getOrDefault(0)
 
     private fun MangaData.toSManga(source: Source): SManga =
         SManga.create().also { manga ->
@@ -667,12 +1194,14 @@ object MihonInvoker {
         absolute: Boolean = false,
     ): SAnime =
         SAnime.create().also { anime ->
+            val decodedUrl = BridgeMemo.decode(url ?: "")
+            anime.url = inputAnimeUrl(source.baseUrl, decodedUrl.url, absolute)
+            anime.memo = decodedUrl.memo
             anime.fetch_type = eu.kanade.tachiyomi.animesource.model.FetchType.entries
                 .firstOrNull { it.name == fetch_type }
                 ?: eu.kanade.tachiyomi.animesource.model.FetchType.Episodes
             anime.season_number = season_number ?: -1.0
             anime.background_url = background_url
-            anime.url = inputAnimeUrl(source.baseUrl, url ?: "", absolute)
             anime.title = title ?: ""
             anime.artist = artist
             anime.author = author
@@ -688,7 +1217,9 @@ object MihonInvoker {
         absolute: Boolean = false,
     ): SEpisode =
         SEpisode.create().also { episode ->
-            episode.url = inputAnimeUrl(source.baseUrl, url ?: "", absolute)
+            val decodedUrl = BridgeMemo.decode(url ?: "")
+            episode.url = inputAnimeUrl(source.baseUrl, decodedUrl.url, absolute)
+            episode.memo = decodedUrl.memo
             episode.name = name ?: ""
             episode.date_upload = date_upload ?: 0L
             episode.episode_number = episode_number ?: 0f

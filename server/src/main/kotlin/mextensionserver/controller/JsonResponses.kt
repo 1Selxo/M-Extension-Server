@@ -1,5 +1,6 @@
 package mextensionserver.controller
 
+import com.fasterxml.jackson.databind.DeserializationFeature
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import fi.iki.elonen.NanoHTTPD
@@ -18,7 +19,10 @@ internal object JsonResponses {
      * Kotlin-reflection introspection of every type on every call, which is
      * very slow on the iOS interpreter.
      */
-    val mapper: ObjectMapper = jacksonObjectMapper()
+    val mapper: ObjectMapper =
+        jacksonObjectMapper().apply {
+            configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+        }
 
     /**
      * Same response as `NanoHTTPD.newFixedLengthResponse(status, mimeType, text)`
