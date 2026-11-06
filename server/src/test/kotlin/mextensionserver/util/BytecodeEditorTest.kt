@@ -65,6 +65,121 @@ class BytecodeEditorTest {
         }
     }
 
+    @Test
+    fun `restores allocations erased to a grandparent or hidden by a stale max stack`() {
+        val jar = Files.createTempFile("bytecode-editor-ancestor-test", ".jar")
+        try {
+            writeJar(
+                jar,
+                mapOf(
+                    "InlinedBase.class" to inlinedBase(),
+                    "InlinedLeaf.class" to inlinedLeaf(),
+                    "FlagHolder.class" to flagHolder(),
+                    "StaleMaxStack.class" to staleMaxStack(),
+                ),
+            )
+
+            BytecodeEditor.fixAndroidClasses(jar)
+
+            URLClassLoader(arrayOf(jar.toUri().toURL()), javaClass.classLoader).use { loader ->
+                // R8 inlined InlinedLeaf() -> InlinedBase() -> Object(), so
+                // dex2jar allocated an Object two levels above the real class.
+                assertEquals(
+                    "InlinedLeaf",
+                    Class
+                        .forName("InlinedLeaf", true, loader)
+                        .getField("INSTANCE")
+                        .get(null)
+                        .javaClass.name,
+                )
+                // The method declares a max stack below what it pushes, which
+                // used to make ASM's analysis, and so the repair, skip it.
+                assertEquals(
+                    "FlagHolder",
+                    Class
+                        .forName("StaleMaxStack", true, loader)
+                        .getMethod("create")
+                        .invoke(null)
+                        .javaClass.name,
+                )
+            }
+        } finally {
+            Files.deleteIfExists(jar)
+        }
+    }
+
+    private fun inlinedBase(): ByteArray {
+        val writer = ClassWriter(0)
+        writer.visit(Opcodes.V1_8, Opcodes.ACC_PUBLIC or Opcodes.ACC_ABSTRACT, "InlinedBase", null, "java/lang/Object", null)
+        writer.visitEnd()
+        return writer.toByteArray()
+    }
+
+    private fun inlinedLeaf(): ByteArray {
+        val writer = ClassWriter(0)
+        writer.visit(Opcodes.V1_8, Opcodes.ACC_PUBLIC or Opcodes.ACC_FINAL, "InlinedLeaf", null, "InlinedBase", null)
+        writer
+            .visitField(
+                Opcodes.ACC_PUBLIC or Opcodes.ACC_STATIC or Opcodes.ACC_FINAL,
+                "INSTANCE",
+                "LInlinedLeaf;",
+                null,
+                null,
+            ).visitEnd()
+        writer
+            .visitMethod(Opcodes.ACC_STATIC, "<clinit>", "()V", null, null)
+            .apply {
+                visitCode()
+                visitTypeInsn(Opcodes.NEW, "java/lang/Object")
+                visitInsn(Opcodes.DUP)
+                visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false)
+                visitFieldInsn(Opcodes.PUTSTATIC, "InlinedLeaf", "INSTANCE", "LInlinedLeaf;")
+                visitInsn(Opcodes.RETURN)
+                visitMaxs(2, 0)
+                visitEnd()
+            }
+        writer.visitEnd()
+        return writer.toByteArray()
+    }
+
+    private fun flagHolder(): ByteArray {
+        val writer = ClassWriter(0)
+        writer.visit(Opcodes.V1_8, Opcodes.ACC_PUBLIC or Opcodes.ACC_FINAL, "FlagHolder", null, "java/lang/Object", null)
+        writer.visitField(Opcodes.ACC_PUBLIC, "flag", "Z", null, null).visitEnd()
+        writer.visitEnd()
+        return writer.toByteArray()
+    }
+
+    private fun staleMaxStack(): ByteArray {
+        val writer = ClassWriter(0)
+        writer.visit(Opcodes.V1_8, Opcodes.ACC_PUBLIC or Opcodes.ACC_FINAL, "StaleMaxStack", null, "java/lang/Object", null)
+        writer
+            .visitMethod(Opcodes.ACC_PUBLIC or Opcodes.ACC_STATIC, "create", "()Ljava/lang/Object;", null, null)
+            .apply {
+                visitCode()
+                visitTypeInsn(Opcodes.NEW, "java/lang/Object")
+                visitInsn(Opcodes.DUP)
+                visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false)
+                visitVarInsn(Opcodes.ASTORE, 0)
+                visitVarInsn(Opcodes.ALOAD, 0)
+                visitInsn(Opcodes.ICONST_0)
+                visitFieldInsn(Opcodes.PUTFIELD, "FlagHolder", "flag", "Z")
+                visitInsn(Opcodes.ACONST_NULL)
+                visitInsn(Opcodes.ACONST_NULL)
+                visitInsn(Opcodes.ACONST_NULL)
+                visitInsn(Opcodes.POP)
+                visitInsn(Opcodes.POP)
+                visitInsn(Opcodes.POP)
+                visitVarInsn(Opcodes.ALOAD, 0)
+                visitInsn(Opcodes.ARETURN)
+                // Pushes three values; declares two, as dex2jar sometimes does.
+                visitMaxs(2, 1)
+                visitEnd()
+            }
+        writer.visitEnd()
+        return writer.toByteArray()
+    }
+
     private fun writeJar(
         jar: Path,
         entries: Map<String, ByteArray>,
