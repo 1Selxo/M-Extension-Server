@@ -63,7 +63,13 @@ import java.util.concurrent.TimeoutException
 
 object MihonInvoker {
     private val logger = KotlinLogging.logger {}
-    private const val BRIDGE_CONTEXT_KEY = "__mangayomi_bridge_context__"
+
+    // Upstream's name and Mangatan's: the upstream merge took upstream's, and
+    // Mangatan clients that only sent theirs lost the source id, the changed
+    // key and the apply mode. Without the source id a factory whose sources
+    // share a base URL (Jellyfin) always resolved to its first source.
+    private val BRIDGE_CONTEXT_KEYS =
+        setOf("__mangayomi_bridge_context__", "__mangatan_bridge_context__")
     private const val REPLACE_PRESENT_PREFERENCES = "replace-present"
     private const val KL_RAW_SOURCE_ID = "7433897302034602657"
     private val sourceHttpServers = ConcurrentHashMap<Long, HttpServer>()
@@ -320,7 +326,7 @@ object MihonInvoker {
 
     private fun bridgeContext(data: DataBody): Map<String, Any> =
         data.preferences
-            ?.firstOrNull { it["key"] == BRIDGE_CONTEXT_KEY }
+            ?.firstOrNull { it["key"] in BRIDGE_CONTEXT_KEYS }
             .orEmpty()
 
     fun preparePreferences(

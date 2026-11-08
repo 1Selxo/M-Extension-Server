@@ -156,6 +156,23 @@ class MihonInvokerTest {
     }
 
     @Test
+    fun `reads the bridge context under Mangatan's name too`() {
+        val context =
+            mutableListOf<Map<String, Any>>(
+                mapOf(
+                    "key" to "__mangatan_bridge_context__",
+                    "preferenceApplyMode" to "replace-present",
+                ),
+            )
+
+        assertTrue(
+            MihonInvoker.shouldReplacePresentPreferences(
+                DataBody(method = "sourcesAnime", preferences = context),
+            ),
+        )
+    }
+
+    @Test
     fun `converts children of grouped anime filters`() {
         val child = TestCheckBox()
         val originalFilters =
