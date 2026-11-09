@@ -68,7 +68,7 @@ kotlin.target.compilations.getByName("perfExtension").associateWith(kotlin.targe
 kotlin.target.compilations.getByName("perf").associateWith(kotlin.target.compilations.getByName("main"))
 
 // should be bumped with each stable release
-val m_extension_serverVersion = "v1.0.8.0"
+val m_extension_serverVersion = "v1.0.8.1"
 
 // counts commit count on master
 val m_extension_serverRevision = runCatching {
