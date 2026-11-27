@@ -33,6 +33,14 @@ object MExtensionServerLoader {
             dispose = LoadedExtension::close,
         )
 
+    private val convertedJars by lazy {
+        val root = System.getProperty(mextensionserver.DataDirectory.ROOT_DIR_PROPERTY)
+        ConvertedJarCache(
+            if (root != null) File(root) else tempDir,
+            mextensionserver.BuildConfig.REVISION,
+        )
+    }
+
     private const val MANGA_PACKAGE = "tachiyomi.extension"
     private const val ANIME_PACKAGE = "tachiyomi.animeextension"
     private const val METADATA_SOURCE_CLASS_SUFFIX = ".class"
@@ -169,13 +177,12 @@ object MExtensionServerLoader {
                 }
             logger.debug { "Main class for extension is $className" }
 
-            // Convert to JAR
-            val dexFile = File(tempApkFile.absolutePath)
-
-            dex2jar(dexFile, jarFile)
-
-            // Extract assets and resources from APK
-            Extension.extractAssetsFromApk(tempApkFile, jarFile)
+            // Convert to JAR, or reuse an earlier launch's conversion.
+            convertedJars.materialize(sha256(apkData), jarFile) { target ->
+                dex2jar(File(tempApkFile.absolutePath), target)
+                // Extract assets and resources from APK
+                Extension.extractAssetsFromApk(tempApkFile, target)
+            }
 
             // Load extension sources
             val loadedSource = loadExtensionSources(jarFile, className, tempApkFile)

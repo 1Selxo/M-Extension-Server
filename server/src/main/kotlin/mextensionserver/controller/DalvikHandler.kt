@@ -137,6 +137,8 @@ class DalvikHandler {
                     responseJson,
                 ).apply {
                     addHeader("X-Mangayomi-Extension-Id", invocation.extensionId)
+                    // Mangatan clients before 2026-11 read only this name.
+                    addHeader("X-Mangatan-Extension-Id", invocation.extensionId)
                 }
         } catch (e: LinkageError) {
             errorResponse(e)

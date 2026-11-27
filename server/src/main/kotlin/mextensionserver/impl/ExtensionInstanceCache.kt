@@ -1,5 +1,7 @@
 package mextensionserver.impl
 
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CompletionException
 import java.util.concurrent.locks.ReentrantLock
 import java.util.concurrent.locks.ReentrantReadWriteLock
 import kotlin.concurrent.withLock
@@ -30,6 +32,12 @@ internal class ExtensionInstanceCache<T>(
     private val cacheLock = Any()
     private val entries = mutableMapOf<String, Entry<T>>()
 
+    // Loads in progress, by key. A load converts a whole APK, so it runs
+    // outside [cacheLock]: other extensions load at the same time, and calls
+    // to loaded ones never wait for it. A second request for the same key
+    // waits for the first load instead of starting another.
+    private val loading = mutableMapOf<String, CompletableFuture<Entry<T>>>()
+
     fun <R> use(
         data: ByteArray,
         block: (T) -> R,
@@ -41,16 +49,47 @@ internal class ExtensionInstanceCache<T>(
     ): KeyedResult<R> =
         lifecycleLock.readLock().withLock {
             val key = keyOf(data)
-            val entry =
-                synchronized(cacheLock) {
-                    entries.getOrPut(key) {
-                        Entry(load(data))
-                    }
-                }
+            val entry = entryFor(key, data)
             entry.invocationLock.withLock {
                 KeyedResult(key, block(entry.value))
             }
         }
+
+    private fun entryFor(
+        key: String,
+        data: ByteArray,
+    ): Entry<T> {
+        var owner = false
+        val pending =
+            synchronized(cacheLock) {
+                entries[key]?.let { return it }
+                loading.getOrPut(key) {
+                    owner = true
+                    CompletableFuture()
+                }
+            }
+        if (!owner) {
+            try {
+                return pending.join()
+            } catch (error: CompletionException) {
+                throw error.cause ?: error
+            }
+        }
+        try {
+            val entry = Entry(load(data))
+            synchronized(cacheLock) {
+                entries[key] = entry
+                loading.remove(key)
+            }
+            pending.complete(entry)
+            return entry
+        } catch (error: Throwable) {
+            // Not cached: the next request tries again.
+            synchronized(cacheLock) { loading.remove(key) }
+            pending.completeExceptionally(error)
+            throw error
+        }
+    }
 
     fun <R> useByKey(
         key: String,

@@ -87,6 +87,71 @@ class ExtensionInstanceCacheTest {
     }
 
     @Test
+    fun `loads different extensions at the same time`() {
+        // Loading converts the whole APK. One global lock around it made every
+        // other request, even for extensions already loaded, wait for it, so a
+        // launch converted 59 APKs one after another.
+        val secondStarted = CountDownLatch(1)
+        val executor = Executors.newFixedThreadPool(2)
+        val cache =
+            ExtensionInstanceCache(
+                keyOf = ByteArray::contentToString,
+                load = { data ->
+                    if (data[0] == 1.toByte()) {
+                        check(secondStarted.await(5, TimeUnit.SECONDS)) { "loads ran one at a time" }
+                    } else {
+                        secondStarted.countDown()
+                    }
+                    MutableExtension()
+                },
+                dispose = {},
+            )
+
+        try {
+            val first = executor.submit { cache.use(byteArrayOf(1)) {} }
+            Thread.sleep(50)
+            val second = executor.submit { cache.use(byteArrayOf(2)) {} }
+            first.get(10, TimeUnit.SECONDS)
+            second.get(10, TimeUnit.SECONDS)
+        } finally {
+            cache.close()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `loads one extension once when it is asked for twice at the same time`() {
+        val loads = AtomicInteger()
+        val start = CountDownLatch(1)
+        val executor = Executors.newFixedThreadPool(4)
+        val cache =
+            ExtensionInstanceCache(
+                keyOf = ByteArray::contentToString,
+                load = {
+                    loads.incrementAndGet()
+                    Thread.sleep(50)
+                    MutableExtension()
+                },
+                dispose = {},
+            )
+
+        try {
+            List(4) {
+                executor.submit {
+                    start.await()
+                    cache.use(byteArrayOf(1)) {}
+                }
+            }.also { start.countDown() }
+                .forEach { it.get(5, TimeUnit.SECONDS) }
+
+            assertEquals(1, loads.get())
+        } finally {
+            cache.close()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
     fun `close disposes cached instances and allows a clean reload`() {
         val loads = AtomicInteger()
         val disposals = AtomicInteger()
