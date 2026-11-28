@@ -29,7 +29,7 @@ permissions:
   contents: write
 
 env:
-  RUNTIME_RELEASE_TAG: ios-runtime-v17
+  RUNTIME_RELEASE_TAG: ios-runtime-v18
   GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx2g
 
 jobs:
@@ -125,7 +125,7 @@ jobs:
         with:
           tag_name: ${{ env.RUNTIME_RELEASE_TAG }}
           target_commitish: ${{ github.sha }}
-          name: M-Extension-Server embedded iOS runtime v17
+          name: M-Extension-Server embedded iOS runtime v18
           body: |
             Headless ShadowJar for Mangayomi's on-device iOS Mihon bridge.
 
@@ -152,10 +152,11 @@ jobs:
             transport-stream segments, including Anichi and AnimeKai streams,
             before forwarding them to Mangatan.
 
-            v17 brings the fixes of desktop release v1.0.8.1: converted
-            extensions keep allocations past their direct superclass, and the
-            bridge reads Mangatan's request context again, so an extension
-            whose sources share a base URL (Jellyfin) reaches the right one.
+            v18 brings desktop release v1.0.9.0: extensions load in parallel
+            instead of one at a time behind a single lock, converted
+            extensions are kept between launches, and the extension handle is
+            sent under Mangatan's header name as well, so clients stop
+            uploading the whole APK with every request.
           files: |
             release/MExtensionServer-ios.jar
             release/SHA256SUMS
